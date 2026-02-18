@@ -30,6 +30,7 @@ export function createApp(settings, db, crypto, rateLimiter) {
   const authHandlers = { requireAuth, requireWriteAccess, writeAudit };
 
   const app = express();
+  app.set("trust proxy", true);
   app.disable("x-powered-by");
   app.use(express.json({ limit: "64kb" }));
 
@@ -72,7 +73,6 @@ export function createApp(settings, db, crypto, rateLimiter) {
 
   // Frontend static files
   const frontendDistPath = path.resolve(__dirname, "../../frontend/dist");
-  app.get("/", (_req, res) => res.redirect("/secret-manager/"));
   app.get("/secret-manager", (_req, res) => res.redirect("/secret-manager/"));
   app.use("/secret-manager", express.static(frontendDistPath));
   app.get("/secret-manager/*", (_req, res) => {
