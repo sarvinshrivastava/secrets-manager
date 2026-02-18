@@ -1,0 +1,12 @@
+.env
+*/.env
+.github
+
+node_modules/
+frontend/node_modules/
+server/node_modules/
+frontend/dist/
+
+data/*.db
+data/*.db-shm
+data/*.db-wal

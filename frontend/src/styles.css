@@ -1,0 +1,61 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer components {
+  .sidebar-nav-item {
+    @apply flex items-center gap-3 px-4 py-3 rounded-lg cursor-pointer transition-colors;
+  }
+  
+  .sidebar-nav-item:hover {
+    @apply bg-slate-100;
+  }
+  
+  .sidebar-nav-item.active {
+    @apply bg-green-100 text-green-700;
+  }
+  
+  .stat-card {
+    @apply bg-white rounded-lg p-6 shadow-sm border border-slate-200;
+  }
+  
+  .secret-card {
+    @apply bg-white rounded-lg p-4 shadow-sm border border-slate-200 hover:shadow-md transition-shadow;
+  }
+  
+  .btn-primary {
+    @apply px-4 py-2 bg-green-600 text-white rounded-lg font-medium hover:bg-green-700 transition-colors;
+  }
+  
+  .btn-secondary {
+    @apply px-4 py-2 bg-slate-200 text-slate-900 rounded-lg font-medium hover:bg-slate-300 transition-colors;
+  }
+  
+  .btn-danger {
+    @apply px-4 py-2 bg-red-600 text-white rounded-lg font-medium hover:bg-red-700 transition-colors;
+  }
+  
+  .input-field {
+    @apply w-full px-3 py-2 border border-slate-300 rounded-lg font-medium focus:outline-none focus:border-green-500 focus:ring-1 focus:ring-green-500;
+  }
+  
+  .badge {
+    @apply inline-flex items-center gap-1 px-2 py-1 rounded text-sm font-medium;
+  }
+  
+  .badge-success {
+    @apply bg-green-100 text-green-700;
+  }
+  
+  .badge-warning {
+    @apply bg-yellow-100 text-yellow-700;
+  }
+  
+  .badge-error {
+    @apply bg-red-100 text-red-700;
+  }
+  
+  .sm-toast {
+    @apply text-sm font-medium;
+  }
+}
