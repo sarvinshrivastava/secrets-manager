@@ -130,7 +130,7 @@ cd frontend
 npm run dev
 ```
 
-Open UI: `http://localhost:5173/secret-manager/`
+Open UI: `http://localhost:5173/`
 
 ## Docker
 
@@ -138,7 +138,7 @@ Open UI: `http://localhost:5173/secret-manager/`
 docker compose up --build -d
 ```
 
-Open UI: `http://localhost:8000/secret-manager/` (the container binds to
+Open UI: `http://localhost:8000/` (the container binds to
 `127.0.0.1:8000` — for a real deployment reach it through the reverse proxy, not
 this port directly). See RUNBOOK.md for VPS deployment specifics.
 

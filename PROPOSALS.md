@@ -305,6 +305,6 @@ means broken CI across all projects.
 | `POST` | `/api/tokens/:name/rotate` | write | Rotate token |
 | `GET` | `/api/auth/me` | read | Token info |
 | `GET` | `/api/audit-logs` | read | Query audit logs |
-| `GET` | `/secret-manager/*` | None | Serve frontend UI |
+| `GET` | `/*` | None | Serve frontend UI (SPA at root) |
 
 ---

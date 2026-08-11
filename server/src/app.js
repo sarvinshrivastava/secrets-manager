@@ -77,10 +77,12 @@ export function createApp(settings, db, crypto, rateLimiter) {
   // fallback so an unknown API path returns JSON, not index.html.
   app.use("/api", (_req, res) => res.status(404).json({ detail: "Not found" }));
 
-  // Frontend static files
+  // Frontend static files, served at the root. Registered AFTER all /api
+  // routes, the /api JSON-404, and /healthz, so those win; every remaining
+  // path falls through to the SPA entry point for client-side routing.
   const frontendDistPath = path.resolve(__dirname, "../../frontend/dist");
-  app.use("/secret-manager", express.static(frontendDistPath));
-  app.get("/secret-manager/*", (_req, res) => {
+  app.use(express.static(frontendDistPath));
+  app.get("*", (_req, res) => {
     res.sendFile(path.join(frontendDistPath, "index.html"));
   });
 
