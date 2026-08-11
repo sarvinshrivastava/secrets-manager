@@ -21,7 +21,14 @@ export default function VaultTable({
 
   return (
     <div className="overflow-x-auto border border-line">
-      <table className="w-full border-collapse">
+      <table className="w-full table-fixed border-collapse">
+        <colgroup>
+          <col className="w-[26%]" />
+          <col className="w-[132px]" />
+          <col />
+          <col className="w-[88px]" />
+          <col className="w-[132px]" />
+        </colgroup>
         <thead>
           <tr className="border-b border-line-strong bg-paper text-left">
             <th className="px-3 py-2 font-mono text-xs font-semibold uppercase tracking-wide text-faint">

@@ -31,16 +31,21 @@ export default function VaultRow({
       <td className="px-3 py-2 align-middle">
         <span className="sm-chip border-line-strong text-muted">{folder}</span>
       </td>
+      {/* Fixed-width cell: dots and the revealed value both occupy one line and
+          truncate, so toggling reveal never resizes the column or reflows the
+          table. The countdown sits in its own fixed slot. */}
       <td className="px-3 py-2 align-middle">
         {revealed ? (
-          <span className="break-all font-mono text-sm text-ink">
-            {reveal.value}
-            <span className="ml-2 text-xs text-faint">
-              re-mask {reveal.secondsLeft}s
+          <div className="flex items-center gap-2">
+            <span className="min-w-0 flex-1 truncate font-mono text-sm text-ink">
+              {reveal.value}
             </span>
-          </span>
+            <span className="flex-none font-mono text-xs tabular-nums text-faint">
+              {reveal.secondsLeft}s
+            </span>
+          </div>
         ) : (
-          <span className="font-mono text-sm tracking-widest text-faint">
+          <span className="block truncate font-mono text-sm tracking-widest text-faint">
             {DOT_MASK}
           </span>
         )}
