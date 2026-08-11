@@ -79,7 +79,6 @@ export function createApp(settings, db, crypto, rateLimiter) {
 
   // Frontend static files
   const frontendDistPath = path.resolve(__dirname, "../../frontend/dist");
-  app.get("/secret-manager", (_req, res) => res.redirect("/secret-manager/"));
   app.use("/secret-manager", express.static(frontendDistPath));
   app.get("/secret-manager/*", (_req, res) => {
     res.sendFile(path.join(frontendDistPath, "index.html"));
