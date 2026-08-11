@@ -1,16 +1,44 @@
-version: "3.9"
 services:
   secret-manager:
     build: .
     container_name: secret-manager
     restart: unless-stopped
     env_file: .env
+    # Bind to loopback ONLY. Docker publishes on all interfaces by default and
+    # its iptables NAT bypasses the host firewall — that would expose the
+    # internal-only routes (/api/tokens, /api/exports, /api/import, ...) straight
+    # to the internet. The host reverse proxy (Nginx/Caddy/Traefik) is the only
+    # thing that should reach the container; it terminates TLS and forwards to
+    # 127.0.0.1:8000.
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
+    # Named volume, NOT a bind mount. A `./data` bind mount is created
+    # root-owned on a fresh clone; the image's `node` user (uid 1000) then can't
+    # create secrets.db -> SQLITE_CANTOPEN -> restart loop. A named volume is
+    # seeded from the image's already-node-owned /app/data, so writes succeed.
     volumes:
-      - ./data:/app/data
+      - secret-manager-data:/app/data
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/healthz"]
+      # `curl` is NOT present in node:20-bookworm-slim, so a curl-based check can
+      # never pass and the container stays permanently `unhealthy`. Node 20 ships
+      # a global fetch — use it instead. start_period covers PBKDF2 key
+      # derivation + the startup encryption migration, which delay first boot.
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
       interval: 30s
       timeout: 5s
       retries: 3
+      start_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  secret-manager-data:

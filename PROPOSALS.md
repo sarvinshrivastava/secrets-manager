@@ -4,7 +4,7 @@
 
 ## [PROPOSAL-001] Flexible Runtime Token Management
 
-**Status:** Discussed, pending implementation
+**Status:** ✅ Implemented (`/api/tokens*`: list/create/revoke/rotate; `expires_at` + `revoked_at` tombstones; env bootstrap upsert on startup; server refuses to start with zero write tokens)
 **Priority:** High
 
 ### Problem
@@ -74,7 +74,7 @@ PBKDF2 verification stays identical.
 
 ## [PROPOSAL-002] Public-Facing Route Isolation + Folder-Scoped Secret Fetch
 
-**Status:** Discussed, pending implementation
+**Status:** ✅ Implemented (`GET /api/secrets/:folder/:key` with its own rate limiter; composite `(folder,key)` PK; `X-Forwarded-For` trusted only from `SECRET_MANAGER_TRUSTED_PROXY_IPS`). Reverse-proxy-level blocking of internal routes is a **deploy-side** responsibility — see RUNBOOK.md and TEMPLATE-CHANGES.md.
 **Priority:** Blocking (required before go-live on VPS)
 
 ### Context
@@ -159,7 +159,7 @@ SECRET_MANAGER_TRUSTED_PROXY_IPS=127.0.0.1,::1
 
 ## [PROPOSAL-003] Export Endpoint Redesign
 
-**Status:** Discussed, pending implementation
+**Status:** ✅ Implemented (`GET /api/exports`, write-token-only, out of the `/api/secrets/*` namespace)
 **Priority:** High
 
 ### Problem
@@ -200,7 +200,7 @@ GET /api/exports            — new dedicated path, clearly internal
 
 ## [PROPOSAL-004] VPS Hardening & Reliability Fixes
 
-**Status:** Discussed, pending implementation
+**Status:** 🟡 Mostly implemented (see per-item markers below)
 **Priority:** Blocking (do before going live) + High (do before first pipeline)
 
 ### Context
@@ -211,27 +211,27 @@ means broken CI across all projects.
 
 #### BLOCKING — Before Going Live
 
-**1. Remove hardcoded credentials from `docker-compose.yml`**
+**1. Remove hardcoded credentials from `docker-compose.yml`** — ✅ done (`env_file: .env`, `.env` gitignored, `.env.example` provided)
 - Current: `SECRET_MANAGER_MASTER_KEY: "keY-ro01t"`, `ADMIN_TOKEN: "admin"` hardcoded
 - Fix: Use `env_file: .env` in docker-compose, add `.env` to `.gitignore`, provide `.env.example`
 - Effort: 10 min
 
-**2. PBKDF2 for master key derivation**
+**2. PBKDF2 for master key derivation** — ✅ done (PBKDF2-derived key; one-time legacy re-encrypt migration runs on startup in `index.js`)
 - Current: `SHA256(masterKey)` — fast, brute-forceable if DB leaks
 - Fix: `PBKDF2(masterKey, static-salt, 210000, 32, 'sha256')` — same as token hashing
 - Effort: 30 min
 - Note: one-time migration needed — re-encrypt all secrets with new derived key
 
-**3. Composite PK schema migration**
+**3. Composite PK schema migration** — ✅ done (`PRIMARY KEY (folder, key)`)
 - Prerequisite for PROPOSAL-002 folder-scoped fetch
 - Effort: 2 hours (migration + all query updates)
 
-**4. Fix X-Forwarded-For IP trust**
+**4. Fix X-Forwarded-For IP trust** — ✅ done (`SECRET_MANAGER_TRUSTED_PROXY_IPS`)
 - Current: blindly trusts any `X-Forwarded-For` header — rate limit bypassable
 - Fix: trust only from known proxy IPs via `SECRET_MANAGER_TRUSTED_PROXY_IPS` env var
 - Effort: 20 min
 
-**5. HTTPS enforcement**
+**5. HTTPS enforcement** — 🟡 partial (app sends `Strict-Transport-Security`; HTTP→HTTPS redirect is a reverse-proxy/deploy responsibility — the container now binds `127.0.0.1` only so plain HTTP on 8000 is not internet-reachable)
 - Reverse proxy (Nginx/Caddy) must redirect HTTP → HTTPS
 - Express adds `Strict-Transport-Security` header
 - Verify no path exposes plain HTTP on port 8000 externally
@@ -239,28 +239,28 @@ means broken CI across all projects.
 
 #### BEFORE FIRST PIPELINE GOES LIVE
 
-**6. Transactions on import + folder rename**
+**6. Transactions on import + folder rename** — ✅ done (import wrapped in a better-sqlite3 transaction; folder rename via `db.renameFolder`)
 - Current: partial import on crash = silent data corruption, no rollback
 - Fix: wrap multi-row operations in `BEGIN/COMMIT/ROLLBACK`
 - Effort: 1 hour
 
-**7. Graceful shutdown handler**
+**7. Graceful shutdown handler** — ✅ done (SIGTERM drains via `server.close`)
 - Current: SIGTERM kills process mid-request → dropped GitHub Actions fetch = failed CI job
 - Fix: SIGTERM handler drains in-flight requests before exit
 - Effort: 15 min
 
-**8. Rate limiter memory leak fix (TTL eviction)**
+**8. Rate limiter memory leak fix (TTL eviction)** — 🟡 partial (empty buckets are evicted when an IP is re-checked; there is no periodic background sweep, so an IP that hits once and never returns leaves one small bucket until next access — low risk, worth a follow-up)
 - Current: IP buckets never evicted from Map — 24/7 public server will bloat over time
 - Fix: periodic cleanup of buckets older than window duration
 - Effort: 30 min
 
-**9. Docker health check + uptime monitoring**
+**9. Docker health check + uptime monitoring** — ✅ health check done (node-native fetch to `/healthz` + `start_period` in `docker-compose.yml`; the previous curl-based check could never pass in the slim base image). External uptime monitoring (UptimeRobot/etc.) is still a deploy-side task.
 - Current: no health check in docker-compose — container appears healthy when DB is broken
 - Fix: add `healthcheck` to docker-compose using `/healthz` endpoint
 - Hook up to UptimeRobot (free) or similar — alert before pipelines tell you it's down
 - Effort: 20 min
 
-**10. Audit log retention / pruning policy**
+**10. Audit log retention / pruning policy** — ✅ done (`SECRET_MANAGER_AUDIT_LOG_RETENTION_DAYS`, pruned on startup + daily)
 - GitHub Actions can hit the endpoint hundreds of times/day — logs grow fast
 - Fix: configurable max rows or time-based pruning (e.g. keep last 90 days)
 - Env var: `SECRET_MANAGER_AUDIT_LOG_RETENTION_DAYS=90`
@@ -268,12 +268,12 @@ means broken CI across all projects.
 
 #### QUALITY OF LIFE — Do Soon After
 
-**11. Secret versioning (keep last N values)**
+**11. Secret versioning (keep last N values)** — ❌ not implemented (secrets are immutable-on-create today: delete + recreate to change a value)
 - Rotating a wrong secret during an active pipeline run breaks CI with no recovery
 - Fix: keep last 2-3 versions per secret, allow point-in-time restore
 - Effort: 3 hours
 
-**12. Folder list sourced from DB**
+**12. Folder list sourced from DB** — 🟡 in progress (`GET /api/folders`, `SELECT DISTINCT folder`, being added in parallel)
 - Current: folder names stored in browser localStorage — inconsistent across devices
 - Fix: derive folder list from `SELECT DISTINCT folder FROM secrets` at the DB level
 - Effort: 1 hour
@@ -296,7 +296,9 @@ means broken CI across all projects.
 | `DELETE` | `/api/secrets/:folder/:key` | write | Delete secret |
 | `POST` | `/api/folders/rename` | write | Rename folder |
 | `GET` | `/api/exports` | write | Bulk export all secrets |
-| `POST` | `/api/secrets/import` | write | Bulk import from .env |
+| `POST` | `/api/import` | write | Bulk import from .env (moved out of `/api/secrets/*`) |
+| `POST` | `/api/secrets/bulk` | write | Bulk create in one folder |
+| `GET` | `/api/folders` | read | List distinct folders |
 | `GET` | `/api/tokens` | write | List tokens |
 | `POST` | `/api/tokens` | write | Create token |
 | `DELETE` | `/api/tokens/:name` | write | Revoke token |

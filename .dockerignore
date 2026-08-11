@@ -1,0 +1,15 @@
+# Keep host build artifacts out of the image build context.
+# `COPY frontend/ ./` and `COPY server/src ./` otherwise drag in host
+# node_modules (wrong platform for native better-sqlite3), stale dist, and — far
+# worse — a real .env full of secrets baked into an image layer.
+node_modules
+**/node_modules
+dist
+frontend/dist
+data
+.env
+*.env
+.git
+.gitignore
+*.log
+.DS_Store
