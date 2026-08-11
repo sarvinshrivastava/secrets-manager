@@ -29,31 +29,61 @@ if (db.countWriteTokens() === 0) {
 }
 
 // ── PBKDF2 master key migration ────────────────────────────────────────────
-// Detect secrets encrypted with the old SHA256-derived key and re-encrypt with PBKDF2.
+// Re-encrypt any secrets still under the old SHA256-derived key. Iterates
+// PER ROW (a mixed legacy/PBKDF2 DB must not crash boot or strand rows): try
+// the PBKDF2 key first (already migrated), else the legacy key (migrate), else
+// count as failed. A canary then aborts boot if any row decrypts under NEITHER
+// key — that means the master key is wrong and continuing would corrupt data.
 function migrateEncryptionIfNeeded() {
   const rows = db.listSecretsForExport();
   if (rows.length === 0) return;
 
-  let needsMigration = false;
-  try {
-    crypto.decryptWithLegacyKey(rows[0].nonce, rows[0].ciphertext);
-    needsMigration = true;
-  } catch {
-    // Already using PBKDF2 key — no migration needed
-    return;
+  let migrated = 0;
+  let alreadyOk = 0;
+  let failed = 0;
+
+  const migrateTx = db.db.transaction((entries) => {
+    for (const row of entries) {
+      try {
+        crypto.decryptValue(row.nonce, row.ciphertext);
+        alreadyOk += 1;
+        continue;
+      } catch {
+        // not PBKDF2-encrypted — try legacy below
+      }
+
+      try {
+        const plaintext = crypto.decryptWithLegacyKey(
+          row.nonce,
+          row.ciphertext,
+        );
+        const encrypted = crypto.encryptValue(plaintext);
+        db.migrateSecretEncryption(
+          row.id,
+          encrypted.nonce,
+          encrypted.ciphertext,
+        );
+        migrated += 1;
+      } catch {
+        failed += 1;
+      }
+    }
+  });
+
+  migrateTx(rows);
+
+  if (migrated > 0) {
+    console.info(`Migrated ${migrated} secret(s) to PBKDF2-derived key.`);
   }
 
-  if (needsMigration) {
-    console.info(`Migrating ${rows.length} secret(s) to PBKDF2-derived key...`);
-    const migrateTx = db.db.transaction((entries) => {
-      for (const row of entries) {
-        const plaintext = crypto.decryptWithLegacyKey(row.nonce, row.ciphertext);
-        const encrypted = crypto.encryptValue(plaintext);
-        db.migrateSecretEncryption(row.id, encrypted.nonce, encrypted.ciphertext);
-      }
-    });
-    migrateTx(rows);
-    console.info("Migration complete.");
+  // Canary: the master key must be able to decrypt existing secrets.
+  if (failed > 0) {
+    console.error(
+      `FATAL: ${failed} stored secret(s) could not be decrypted with either the ` +
+        "PBKDF2 or legacy master key. SECRET_MANAGER_MASTER_KEY is likely wrong — " +
+        "refusing to start to avoid corrupting the vault.",
+    );
+    process.exit(1);
   }
 }
 

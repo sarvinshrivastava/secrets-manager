@@ -32,7 +32,9 @@ export function createApp(settings, db, crypto, rateLimiter) {
   const app = express();
   app.set("trust proxy", true);
   app.disable("x-powered-by");
-  app.use(express.json({ limit: "64kb" }));
+  // 256kb: a single secret value caps at 32kb, but POST /api/secrets/bulk carries
+  // many at once. Still a sane cap that bounds request-body memory / DoS.
+  app.use(express.json({ limit: "256kb" }));
 
   app.use(securityHeaders);
   app.use(globalRateLimit);
@@ -71,6 +73,10 @@ export function createApp(settings, db, crypto, rateLimiter) {
   // Audit logs
   app.use("/api/audit-logs", createAuditRouter(db, authHandlers));
 
+  // Terminal JSON 404 for unknown /api/* routes — must sit BEFORE the SPA
+  // fallback so an unknown API path returns JSON, not index.html.
+  app.use("/api", (_req, res) => res.status(404).json({ detail: "Not found" }));
+
   // Frontend static files
   const frontendDistPath = path.resolve(__dirname, "../../frontend/dist");
   app.get("/secret-manager", (_req, res) => res.redirect("/secret-manager/"));
@@ -79,11 +85,19 @@ export function createApp(settings, db, crypto, rateLimiter) {
     res.sendFile(path.join(frontendDistPath, "index.html"));
   });
 
-  // Global error handler
+  // Global error handler.
+  // - Honor err.status/err.statusCode (malformed JSON -> 400, oversized body -> 413)
+  //   instead of blanket 500.
+  // - NEVER log err itself: body-parser attaches err.body = the raw request body,
+  //   which for /api/secrets and /api/import is PLAINTEXT SECRETS. Log only a
+  //   redacted line (message + status).
   app.use((err, _req, res, _next) => {
-    console.error(err);
+    const status = err.status || err.statusCode || 500;
+    console.error(`Request error: status=${status} message=${err.message}`);
     if (res.headersSent) return;
-    res.status(500).json({ detail: "Internal server error" });
+    const detail =
+      status === 500 ? "Internal server error" : err.message || "Error";
+    res.status(status).json({ detail });
   });
 
   return app;

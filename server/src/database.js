@@ -34,6 +34,7 @@ export class Database {
         role        TEXT NOT NULL CHECK(role IN ('read', 'write')),
         salt        BLOB NOT NULL,
         token_hash  BLOB NOT NULL,
+        scope       TEXT NOT NULL DEFAULT '*',
         created_at  TEXT NOT NULL,
         updated_at  TEXT NOT NULL,
         expires_at  TEXT,
@@ -53,7 +54,10 @@ export class Database {
     `);
 
     // Secrets table migration: rebuild if missing id column (old schema had no autoincrement PK)
-    const secretCols = this.db.prepare("PRAGMA table_info(secrets)").all().map((c) => c.name);
+    const secretCols = this.db
+      .prepare("PRAGMA table_info(secrets)")
+      .all()
+      .map((c) => c.name);
     if (!secretCols.includes("id")) {
       this.db.exec(`
         ALTER TABLE secrets RENAME TO secrets_old;
@@ -77,12 +81,24 @@ export class Database {
     }
 
     // Lightweight migrations for tokens table (if upgrading existing DB)
-    const tokenCols = this.db.prepare("PRAGMA table_info(tokens)").all().map((c) => c.name);
+    const tokenCols = this.db
+      .prepare("PRAGMA table_info(tokens)")
+      .all()
+      .map((c) => c.name);
     if (!tokenCols.includes("expires_at")) {
       this.db.exec("ALTER TABLE tokens ADD COLUMN expires_at TEXT");
     }
     if (!tokenCols.includes("revoked_at")) {
       this.db.exec("ALTER TABLE tokens ADD COLUMN revoked_at TEXT");
+    }
+    if (!tokenCols.includes("scope")) {
+      // Existing tokens predate scoping — grant them '*' (all folders).
+      this.db.exec(
+        "ALTER TABLE tokens ADD COLUMN scope TEXT NOT NULL DEFAULT '*'",
+      );
+      this.db.exec(
+        "UPDATE tokens SET scope = '*' WHERE scope IS NULL OR scope = ''",
+      );
     }
   }
 
@@ -97,11 +113,20 @@ export class Database {
     this.createSecretStmt = this.db.prepare(
       "INSERT OR IGNORE INTO secrets (key, folder, nonce, ciphertext, created_at) VALUES (?, ?, ?, ?, ?)",
     );
+    this.updateSecretStmt = this.db.prepare(
+      "UPDATE secrets SET nonce = ?, ciphertext = ? WHERE folder = ? AND key = ?",
+    );
     this.deleteSecretStmt = this.db.prepare(
       "DELETE FROM secrets WHERE folder = ? AND key = ?",
     );
     this.renameFolderStmt = this.db.prepare(
       "UPDATE secrets SET folder = ? WHERE folder = ?",
+    );
+    this.folderKeyCollisionStmt = this.db.prepare(
+      "SELECT key FROM secrets WHERE folder = ? AND key IN (SELECT key FROM secrets WHERE folder = ?) ORDER BY key ASC",
+    );
+    this.listFoldersStmt = this.db.prepare(
+      "SELECT DISTINCT folder FROM secrets ORDER BY folder ASC",
     );
     this.listSecretsForExportStmt = this.db.prepare(
       "SELECT id, key, folder, nonce, ciphertext FROM secrets ORDER BY key ASC",
@@ -111,28 +136,42 @@ export class Database {
     );
 
     // Tokens
+    // Count only tokens that are usable RIGHT NOW: write role, not revoked, and
+    // not expired. An expired write token must NOT keep the vault "healthy".
     this.countWriteTokensStmt = this.db.prepare(
-      "SELECT COUNT(*) AS total FROM tokens WHERE role = 'write' AND revoked_at IS NULL",
+      "SELECT COUNT(*) AS total FROM tokens WHERE role = 'write' AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)",
     );
     this.listTokensStmt = this.db.prepare(
-      "SELECT name, role, salt, token_hash, created_at, updated_at, expires_at, revoked_at FROM tokens",
+      "SELECT name, role, salt, token_hash, scope, created_at, updated_at, expires_at, revoked_at FROM tokens",
     );
     this.upsertTokenStmt = this.db.prepare(`
-      INSERT INTO tokens (name, role, salt, token_hash, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO tokens (name, role, salt, token_hash, scope, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(name) DO UPDATE SET
         role = excluded.role,
         salt = excluded.salt,
         token_hash = excluded.token_hash,
+        scope = excluded.scope,
         updated_at = excluded.updated_at,
         revoked_at = NULL
     `);
+    // Upsert on create too: recreating a token whose name is a revoked tombstone
+    // must overwrite it (a plain INSERT would hit the PRIMARY KEY and 500).
     this.createTokenStmt = this.db.prepare(`
-      INSERT INTO tokens (name, role, salt, token_hash, created_at, updated_at, expires_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO tokens (name, role, salt, token_hash, scope, created_at, updated_at, expires_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(name) DO UPDATE SET
+        role = excluded.role,
+        salt = excluded.salt,
+        token_hash = excluded.token_hash,
+        scope = excluded.scope,
+        created_at = excluded.created_at,
+        updated_at = excluded.updated_at,
+        expires_at = excluded.expires_at,
+        revoked_at = NULL
     `);
     this.getTokenByNameStmt = this.db.prepare(
-      "SELECT name, role, salt, token_hash, created_at, updated_at, expires_at, revoked_at FROM tokens WHERE name = ?",
+      "SELECT name, role, salt, token_hash, scope, created_at, updated_at, expires_at, revoked_at FROM tokens WHERE name = ?",
     );
     this.revokeTokenStmt = this.db.prepare(
       "UPDATE tokens SET revoked_at = ? WHERE name = ?",
@@ -167,7 +206,19 @@ export class Database {
   /** Returns true if inserted, false if (folder, key) already exists. */
   createSecret(folder, key, nonce, ciphertext) {
     const now = utcNowIso();
-    const result = this.createSecretStmt.run(key, folder, nonce, ciphertext, now);
+    const result = this.createSecretStmt.run(
+      key,
+      folder,
+      nonce,
+      ciphertext,
+      now,
+    );
+    return result.changes > 0;
+  }
+
+  /** Returns true if an existing (folder, key) was updated, false if absent. */
+  updateSecret(folder, key, nonce, ciphertext) {
+    const result = this.updateSecretStmt.run(nonce, ciphertext, folder, key);
     return result.changes > 0;
   }
 
@@ -179,6 +230,17 @@ export class Database {
   renameFolder(fromFolder, toFolder) {
     const result = this.renameFolderStmt.run(toFolder, fromFolder);
     return Number(result.changes || 0);
+  }
+
+  /** Keys present in BOTH folders — a rename would violate UNIQUE(folder, key). */
+  folderKeyCollisions(fromFolder, toFolder) {
+    return this.folderKeyCollisionStmt
+      .all(toFolder, fromFolder)
+      .map((r) => r.key);
+  }
+
+  listFolders() {
+    return this.listFoldersStmt.all().map((r) => r.folder);
   }
 
   listSecretsForExport() {
@@ -193,7 +255,7 @@ export class Database {
   // ── Tokens ───────────────────────────────────────────────────────────────
 
   countWriteTokens() {
-    const row = this.countWriteTokensStmt.get();
+    const row = this.countWriteTokensStmt.get(utcNowIso());
     return Number(row.total || 0);
   }
 
@@ -202,15 +264,27 @@ export class Database {
   }
 
   /** Bootstrap upsert — used only for env-var tokens at startup. Clears revoked_at. */
-  upsertToken(name, role, salt, tokenHash) {
+  upsertToken(name, role, salt, tokenHash, scope = "*") {
     const now = utcNowIso();
-    this.upsertTokenStmt.run(name, role, salt, tokenHash, now, now);
+    this.upsertTokenStmt.run(name, role, salt, tokenHash, scope, now, now);
   }
 
-  /** API create — fails if name already exists and is not revoked. */
-  createToken(name, role, salt, tokenHash, expiresAt = null) {
+  /**
+   * API create. Upserts so a revoked-tombstone name can be recreated. Callers
+   * (routes) reject recreating an ACTIVE name before reaching here.
+   */
+  createToken(name, role, salt, tokenHash, expiresAt = null, scope = "*") {
     const now = utcNowIso();
-    this.createTokenStmt.run(name, role, salt, tokenHash, now, now, expiresAt);
+    this.createTokenStmt.run(
+      name,
+      role,
+      salt,
+      tokenHash,
+      scope,
+      now,
+      now,
+      expiresAt,
+    );
   }
 
   getTokenByName(name) {
@@ -227,7 +301,13 @@ export class Database {
 
   // ── Audit logs ───────────────────────────────────────────────────────────
 
-  listAuditLogs({ action = null, status = null, key = null, tokenName = null, limit = 100 } = {}) {
+  listAuditLogs({
+    action = null,
+    status = null,
+    key = null,
+    tokenName = null,
+    limit = 100,
+  } = {}) {
     const clauses = [];
     const params = [];
 
@@ -269,7 +349,14 @@ export class Database {
     }));
   }
 
-  insertAuditLog({ tokenName, action, keyName, status, ipAddress, details = null }) {
+  insertAuditLog({
+    tokenName,
+    action,
+    keyName,
+    status,
+    ipAddress,
+    details = null,
+  }) {
     this.insertAuditLogStmt.run(
       utcNowIso(),
       tokenName,

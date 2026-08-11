@@ -5,7 +5,10 @@ export function createSecurityMiddleware(db, rateLimiter, trustedProxyIps) {
     res.setHeader("X-Content-Type-Options", "nosniff");
     res.setHeader("X-Frame-Options", "DENY");
     res.setHeader("Referrer-Policy", "no-referrer");
-    res.setHeader("Strict-Transport-Security", "max-age=63072000; includeSubDomains");
+    res.setHeader(
+      "Strict-Transport-Security",
+      "max-age=63072000; includeSubDomains",
+    );
     next();
   }
 
@@ -13,7 +16,8 @@ export function createSecurityMiddleware(db, rateLimiter, trustedProxyIps) {
     if (!req.path.startsWith("/api/")) return next();
 
     const ip = getClientIp(req, trustedProxyIps);
-    if (!rateLimiter.allow(ip)) {
+    const { allowed, retryAfter } = rateLimiter.allow(ip);
+    if (!allowed) {
       db.insertAuditLog({
         tokenName: null,
         action: "rate_limit",
@@ -22,6 +26,7 @@ export function createSecurityMiddleware(db, rateLimiter, trustedProxyIps) {
         ipAddress: ip,
         details: "Per-IP limit exceeded",
       });
+      res.setHeader("Retry-After", String(retryAfter));
       return res.status(429).json({ detail: "Rate limit exceeded" });
     }
     return next();
