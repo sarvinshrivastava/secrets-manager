@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
-import Popup from "reactjs-popup";
-import { MdMenu, MdRefresh, MdContentCopy, MdClose } from "react-icons/md";
+import { MdRefresh, MdContentCopy, MdClose } from "react-icons/md";
 import { toast } from "react-hot-toast";
 import {
   exportSecrets,
@@ -24,240 +23,88 @@ function tokenStatus(t) {
   return "active";
 }
 
-function StatusBadge({ status }) {
-  if (status === "active")
-    return <span className="badge badge-success text-xs">Active</span>;
-  if (status === "expired")
-    return <span className="badge badge-warning text-xs">Expired</span>;
-  return <span className="badge badge-error text-xs">Revoked</span>;
+const STATUS_STYLE = {
+  active: "border-ok text-ok",
+  expired: "border-warn text-warn",
+  revoked: "border-danger text-danger",
+};
+
+function Row({ label, children }) {
+  return (
+    <div className="grid grid-cols-3 gap-3 border-b border-line py-2 last:border-b-0">
+      <dt className="font-mono text-xs uppercase tracking-wide text-faint">
+        {label}
+      </dt>
+      <dd className="col-span-2 font-mono text-sm text-ink">{children}</dd>
+    </div>
+  );
 }
 
-function RevealPopup({ open, label, tokenValue, onClose }) {
-  async function copyValue() {
+function Section({ title, children }) {
+  return (
+    <section className="border border-line bg-surface">
+      <div className="border-b border-line px-4 py-2">
+        <h3 className="font-mono text-sm font-semibold text-ink">{title}</h3>
+      </div>
+      <div className="px-4 py-3">{children}</div>
+    </section>
+  );
+}
+
+// Full-value reveal modal (shown once after create/rotate — value is never
+// retrievable again).
+function TokenValueModal({ open, label, value, onClose }) {
+  if (!open) return null;
+  async function copy() {
     try {
-      await navigator.clipboard.writeText(tokenValue);
-      toast.success("Token copied to clipboard");
+      await navigator.clipboard.writeText(value);
+      toast.success("Token copied");
     } catch {
-      toast.error("Clipboard unavailable — copy the token manually");
+      toast.error("Clipboard unavailable — copy manually");
     }
   }
-
   return (
-    <Popup
-      open={open}
-      modal
-      closeOnDocumentClick
-      onClose={onClose}
-      overlayStyle={{
-        background: "rgba(15, 23, 42, 0.45)",
-        backdropFilter: "blur(3px)",
-      }}
-      contentStyle={{
-        maxWidth: "560px",
-        width: "92vw",
-        borderRadius: "12px",
-        border: "1px solid #e2e8f0",
-        padding: 0,
-        overflow: "hidden",
-      }}
+    <div
+      className="fixed inset-0 z-40 flex items-center justify-center bg-ink/40 px-4"
+      onClick={onClose}
+      role="presentation"
     >
-      <div className="bg-white">
-        {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200">
-          <h3 className="font-semibold text-slate-900 text-sm">Token Created</h3>
+      <div
+        className="w-full max-w-lg border border-line-strong bg-surface"
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+      >
+        <div className="flex items-center justify-between border-b border-line px-4 py-3">
+          <h3 className="font-mono text-sm font-semibold text-ink">{label}</h3>
           <button
-            type="button"
             onClick={onClose}
-            className="text-slate-400 hover:text-slate-700 p-1 rounded"
+            className="text-muted hover:text-ink"
             aria-label="Close"
           >
-            <MdClose size={20} />
+            <MdClose size={18} />
           </button>
         </div>
-
-        {/* Body */}
-        <div className="px-5 py-5 space-y-4">
-          <div className="rounded-lg border border-amber-200 bg-amber-50 p-4">
-            <p className="text-sm font-semibold text-amber-900">
-              ⚠️ {label}
-            </p>
-            <p className="text-xs text-amber-800 mt-2">
-              Copy this token now. It will never be shown again.
-            </p>
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-slate-900 mb-2">
-              Token Value
-            </label>
-            <div className="flex items-center gap-2">
-              <code className="flex-1 block bg-slate-900 border border-slate-700 rounded px-3 py-2 text-xs font-mono text-green-400 break-all">
-                {tokenValue}
-              </code>
-              <button
-                type="button"
-                onClick={copyValue}
-                className="flex-shrink-0 btn-secondary p-2"
-                title="Copy token"
-              >
-                <MdContentCopy size={16} />
-              </button>
-            </div>
+        <div className="space-y-3 px-4 py-4">
+          <p className="border border-warn bg-paper px-3 py-2 font-mono text-xs text-warn">
+            Copy this now — it is shown only once.
+          </p>
+          <div className="flex items-center gap-2">
+            <code className="flex-1 break-all border border-line bg-paper px-3 py-2 font-mono text-xs text-ink">
+              {value}
+            </code>
+            <button onClick={copy} className="sm-btn" aria-label="Copy token">
+              <MdContentCopy size={15} />
+            </button>
           </div>
         </div>
-
-        {/* Footer */}
-        <div className="px-5 py-4 border-t border-slate-200 flex justify-end">
-          <button
-            type="button"
-            className="btn-primary"
-            onClick={onClose}
-          >
+        <div className="flex justify-end border-t border-line px-4 py-3">
+          <button className="sm-btn-accent" onClick={onClose}>
             Done
           </button>
         </div>
       </div>
-    </Popup>
-  );
-}
-
-function RotateTokenDialog({ open, tokenName, mode, input, onInputChange, onBack, onGenerateRandom, onConfirmCustom, loading, onClose }) {
-  const [error, setError] = useState(null);
-
-  const handleConfirmClick = () => {
-    setError(null);
-    const trimmed = input.trim();
-    if (!trimmed) {
-      setError("Token cannot be empty");
-      return;
-    }
-    if (!/^[0-9a-fA-F]+$/.test(trimmed)) {
-      setError("Token must be a hexadecimal string (0-9, a-f)");
-      return;
-    }
-    if (trimmed.length < 64) {
-      setError("Token must be at least 64 hexadecimal characters (32 bytes)");
-      return;
-    }
-    onConfirmCustom(trimmed);
-  };
-
-  return (
-    <Popup
-      open={open}
-      modal
-      closeOnDocumentClick={false}
-      onClose={onClose}
-      overlayStyle={{
-        background: "rgba(15, 23, 42, 0.45)",
-        backdropFilter: "blur(3px)",
-      }}
-      contentStyle={{
-        maxWidth: "560px",
-        width: "92vw",
-        borderRadius: "12px",
-        border: "1px solid #e2e8f0",
-        padding: 0,
-        overflow: "hidden",
-      }}
-    >
-      <div className="bg-white">
-        {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200">
-          <h3 className="font-semibold text-slate-900 text-sm">Rotate Token: {tokenName}</h3>
-          <button
-            type="button"
-            onClick={onClose}
-            className="text-slate-400 hover:text-slate-700 p-1 rounded"
-            aria-label="Close"
-            disabled={loading}
-          >
-            <MdClose size={20} />
-          </button>
-        </div>
-
-        {/* Body */}
-        <div className="px-5 py-5 space-y-4">
-          {mode === "choice" && (
-            <>
-              <p className="text-sm text-slate-600">
-                Choose how to generate a new token for <span className="font-mono font-semibold">{tokenName}</span>:
-              </p>
-              <div className="space-y-3">
-                <button
-                  type="button"
-                  onClick={onGenerateRandom}
-                  disabled={loading}
-                  className="w-full btn-primary text-left py-3"
-                >
-                  <div className="font-semibold">Generate Random Token</div>
-                  <div className="text-xs text-slate-200 mt-1">Backend generates a secure random token</div>
-                </button>
-                <button
-                  type="button"
-                  onClick={onBack}
-                  disabled={loading}
-                  className="w-full btn-secondary text-left py-3"
-                >
-                  <div className="font-semibold">Type/Paste Token</div>
-                  <div className="text-xs text-slate-500 mt-1">Provide your own hex token value (64+ chars)</div>
-                </button>
-              </div>
-            </>
-          )}
-
-          {mode === "input" && (
-            <>
-              <div>
-                <label className="block text-sm font-medium text-slate-900 mb-2">
-                  Token Value (Hexadecimal)
-                </label>
-                <textarea
-                  value={input}
-                  onChange={(e) => {
-                    setError(null);
-                    onInputChange(e.target.value);
-                  }}
-                  placeholder="Enter a 64+ character hexadecimal token (0-9, a-f)"
-                  className="w-full h-24 input-field font-mono text-xs"
-                />
-                {error && <p className="mt-2 text-sm text-red-600">{error}</p>}
-                <p className="mt-2 text-xs text-slate-500">
-                  Token must be hexadecimal (0-9, a-f) and at least 64 characters
-                </p>
-              </div>
-            </>
-          )}
-        </div>
-
-        {/* Footer */}
-        <div className="px-5 py-4 border-t border-slate-200 flex justify-end gap-2">
-          {mode === "input" && (
-            <button
-              type="button"
-              className="btn-secondary"
-              onClick={() => {
-                setError(null);
-                onBack();
-              }}
-              disabled={loading}
-            >
-              Back
-            </button>
-          )}
-          {mode === "input" && (
-            <button
-              type="button"
-              className="btn-primary"
-              onClick={handleConfirmClick}
-              disabled={loading}
-            >
-              {loading ? "Confirming..." : "Confirm"}
-            </button>
-          )}
-        </div>
-      </div>
-    </Popup>
+    </div>
   );
 }
 
@@ -265,24 +112,20 @@ export default function Settings({
   tokenName,
   role,
   token,
+  folders,
+  defaultFolder,
+  onDefaultFolderChange,
   onLogout,
-  onMenuClick,
 }) {
+  const canWrite = role === "write";
+
   const [tokens, setTokens] = useState([]);
   const [tokensLoading, setTokensLoading] = useState(false);
-
-  const [newTokenName, setNewTokenName] = useState("");
-  const [newTokenRole, setNewTokenRole] = useState("read");
-  const [newTokenExpiry, setNewTokenExpiry] = useState("");
+  const [newName, setNewName] = useState("");
+  const [newRole, setNewRole] = useState("read");
+  const [newExpiry, setNewExpiry] = useState("");
   const [creating, setCreating] = useState(false);
-
-  const [revealedToken, setRevealedToken] = useState(null); // { label, token }
-
-  // Rotate dialog state
-  const [rotateTarget, setRotateTarget] = useState(null); // null or token name
-  const [rotateMode, setRotateMode] = useState(null); // null | "choice" | "input"
-  const [rotateInput, setRotateInput] = useState(""); // user's custom token input
-  const [rotatingToken, setRotatingToken] = useState(false);
+  const [revealed, setRevealed] = useState(null); // { label, value }
 
   async function loadTokens() {
     setTokensLoading(true);
@@ -290,19 +133,22 @@ export default function Settings({
       const payload = await listTokens(token);
       setTokens(payload.tokens || []);
     } catch (error) {
-      toast.error(`Failed to load tokens: ${error.message}`);
+      if (error.message !== "Unauthorized") {
+        toast.error(`Failed to load tokens: ${error.message}`);
+      }
     } finally {
       setTokensLoading(false);
     }
   }
 
   useEffect(() => {
-    if (role === "write") loadTokens();
-  }, [token, role]);
+    if (canWrite) loadTokens();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, canWrite]);
 
   async function handleCreate(event) {
     event.preventDefault();
-    const name = newTokenName.trim();
+    const name = newName.trim();
     if (!name) {
       toast.error("Token name is required");
       return;
@@ -312,14 +158,16 @@ export default function Settings({
       const payload = await createToken(
         token,
         name,
-        newTokenRole,
-        newTokenExpiry ? Number(newTokenExpiry) : undefined,
+        newRole,
+        newExpiry ? Number(newExpiry) : undefined,
       );
-      toast.success(`Token "${payload.name}" created`);
-      setRevealedToken({ label: `Token "${payload.name}" created`, token: payload.token });
-      setNewTokenName("");
-      setNewTokenRole("read");
-      setNewTokenExpiry("");
+      setRevealed({
+        label: `Token "${payload.name}" created`,
+        value: payload.token,
+      });
+      setNewName("");
+      setNewRole("read");
+      setNewExpiry("");
       await loadTokens();
     } catch (error) {
       toast.error(`Create failed: ${error.message}`);
@@ -328,8 +176,24 @@ export default function Settings({
     }
   }
 
+  async function handleRotate(name) {
+    if (
+      !window.confirm(
+        `Rotate "${name}"? The old value stops working immediately.`,
+      )
+    )
+      return;
+    try {
+      const payload = await rotateToken(token, name);
+      setRevealed({ label: `Token "${name}" rotated`, value: payload.token });
+      await loadTokens();
+    } catch (error) {
+      toast.error(`Rotate failed: ${error.message}`);
+    }
+  }
+
   async function handleRevoke(name) {
-    if (!window.confirm(`Revoke token "${name}"? This cannot be undone.`)) return;
+    if (!window.confirm(`Revoke "${name}"? This cannot be undone.`)) return;
     try {
       await revokeToken(token, name);
       toast.success(`Token "${name}" revoked`);
@@ -337,41 +201,6 @@ export default function Settings({
     } catch (error) {
       toast.error(`Revoke failed: ${error.message}`);
     }
-  }
-
-  function handleRotate(name) {
-    setRotateTarget(name);
-    setRotateMode("choice");
-    setRotateInput("");
-  }
-
-  async function handleRotateConfirm(customToken) {
-    if (!rotateTarget) return;
-    setRotatingToken(true);
-    try {
-      const payload = await rotateToken(token, rotateTarget, customToken || undefined);
-      toast.success(`Token "${rotateTarget}" rotated`);
-      setRevealedToken({ label: `Token "${rotateTarget}" rotated`, token: payload.token });
-      setRotateTarget(null);
-      setRotateMode(null);
-      setRotateInput("");
-      await loadTokens();
-    } catch (error) {
-      toast.error(`Rotate failed: ${error.message}`);
-    } finally {
-      setRotatingToken(false);
-    }
-  }
-
-  function validateTokenInput(input) {
-    const trimmed = input.trim();
-    if (!/^[0-9a-fA-F]+$/.test(trimmed)) {
-      return "Token must be a hexadecimal string (0-9, a-f)";
-    }
-    if (trimmed.length < 64) {
-      return "Token must be at least 64 hexadecimal characters (32 bytes)";
-    }
-    return null;
   }
 
   async function handleExport() {
@@ -385,7 +214,7 @@ export default function Settings({
       link.click();
       link.remove();
       URL.revokeObjectURL(link.href);
-      toast.success("Exported as .env");
+      toast.success("Exported .env");
     } catch (error) {
       toast.error(`Export failed: ${error.message}`);
     }
@@ -396,294 +225,211 @@ export default function Settings({
   ).length;
 
   return (
-    <div className="w-full">
-      <div className="max-w-6xl mx-auto space-y-6">
-        {/* Page title */}
-        <div className="flex items-center gap-3">
-          <button
-            onClick={onMenuClick}
-            className="lg:hidden text-slate-600 hover:text-slate-900"
-          >
-            <MdMenu size={24} />
-          </button>
-          <div className="flex-1">
-            <h2 className="text-xl sm:text-2xl font-bold text-slate-900">Settings</h2>
-            <p className="text-sm sm:text-base text-slate-600 hidden sm:block">
-              Manage your preferences and account settings
-            </p>
-          </div>
-        </div>
+    <div className="space-y-4">
+      <TokenValueModal
+        open={Boolean(revealed)}
+        label={revealed?.label || ""}
+        value={revealed?.value || ""}
+        onClose={() => setRevealed(null)}
+      />
 
-        {/* Revealed token popup */}
-        {revealedToken && (
-          <RevealPopup
-            open={true}
-            label={revealedToken.label}
-            tokenValue={revealedToken.token}
-            onClose={() => setRevealedToken(null)}
-          />
-        )}
+      <Section title="Identity">
+        <dl>
+          <Row label="Token name">{tokenName || "—"}</Row>
+          <Row label="Role">
+            <span
+              className={`sm-chip ${canWrite ? "border-accent text-accent" : "border-line-strong text-muted"}`}
+            >
+              {role}
+            </span>
+          </Row>
+        </dl>
+      </Section>
 
-        {/* Rotate token dialog */}
-        <RotateTokenDialog
-          open={rotateTarget !== null}
-          tokenName={rotateTarget || ""}
-          mode={rotateMode}
-          input={rotateInput}
-          onInputChange={setRotateInput}
-          onBack={() => {
-            setRotateMode("choice");
-            setRotateInput("");
-          }}
-          onGenerateRandom={() => handleRotateConfirm(null)}
-          onConfirmCustom={handleRotateConfirm}
-          loading={rotatingToken}
-          onClose={() => {
-            setRotateTarget(null);
-            setRotateMode(null);
-            setRotateInput("");
-          }}
+      <Section title="Default folder">
+        <p className="mb-2 font-mono text-xs text-muted">
+          Preselected when adding secrets. Stored in this browser only.
+        </p>
+        <input
+          list="settings-folders"
+          value={defaultFolder}
+          onChange={(event) => onDefaultFolderChange(event.target.value)}
+          className="sm-input max-w-xs"
         />
+        <datalist id="settings-folders">
+          {folders.map((name) => (
+            <option key={name} value={name} />
+          ))}
+        </datalist>
+      </Section>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {/* User Profile */}
-          <div className="stat-card">
-            <h3 className="text-lg font-semibold text-slate-900 mb-4">User Profile</h3>
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-slate-900 mb-2">
-                  Token Name
-                </label>
-                <input
-                  type="text"
-                  value={tokenName}
-                  readOnly
-                  className="input-field bg-slate-50"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-slate-900 mb-2">
-                  Role
-                </label>
-                <input
-                  type="text"
-                  value={role}
-                  readOnly
-                  className="input-field bg-slate-50 capitalize"
-                />
-              </div>
-            </div>
-          </div>
+      {canWrite && (
+        <Section title="Export">
+          <p className="mb-2 font-mono text-xs text-muted">
+            Download every secret as a .env file. Requires a write token.
+          </p>
+          <button
+            type="button"
+            className="sm-btn-accent"
+            onClick={handleExport}
+          >
+            Export .env
+          </button>
+        </Section>
+      )}
 
-          {/* Security */}
-          <div className="stat-card">
-            <h3 className="text-lg font-semibold text-slate-900 mb-4">Security</h3>
-            <div className="space-y-4">
-              <div className="p-4 bg-blue-50 rounded-lg border border-blue-200">
-                <p className="text-sm text-blue-900 font-medium mb-2">🔒 Session Timeout</p>
-                <p className="text-sm text-blue-800">
-                  Your session expires after 5 minutes of inactivity for security.
-                </p>
-              </div>
-              <button
-                type="button"
-                className="btn-secondary w-full"
-                onClick={() =>
-                  toast("Session timeout settings can be configured by your admin", { icon: "i" })
-                }
+      {canWrite && (
+        <Section title="Access tokens">
+          <form
+            onSubmit={handleCreate}
+            className="mb-4 space-y-3 border border-line bg-paper p-3"
+          >
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+              <input
+                type="text"
+                placeholder="name e.g. ci-reader"
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                className="sm-input"
+                required
+              />
+              <select
+                value={newRole}
+                onChange={(e) => setNewRole(e.target.value)}
+                className="sm-input"
               >
-                Configure Session Timeout
-              </button>
-            </div>
-          </div>
-
-          {/* Export — write token only */}
-          {role === "write" && (
-            <div className="stat-card">
-              <h3 className="text-lg font-semibold text-slate-900 mb-4">Export</h3>
-              <div className="space-y-3">
-                <p className="text-sm text-slate-600">
-                  Export your secrets to a secure format (.env file). Requires write token.
-                </p>
-                <button type="button" className="btn-primary w-full" onClick={handleExport}>
-                  Export as .env
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* Danger Zone */}
-          <div className="stat-card border-red-200 bg-red-50">
-            <h3 className="text-lg font-semibold text-red-900 mb-4">Danger Zone</h3>
-            <div className="space-y-3">
-              <p className="text-sm text-red-800">These actions cannot be undone.</p>
-              <button
-                type="button"
-                className="btn-danger w-full"
-                onClick={onLogout}
+                <option value="read">read</option>
+                <option value="write">write</option>
+              </select>
+              <select
+                value={newExpiry}
+                onChange={(e) => setNewExpiry(e.target.value)}
+                className="sm-input"
               >
-                Logout
-              </button>
+                {EXPIRY_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
             </div>
-          </div>
-        </div>
-
-        {/* Access Tokens — write token only */}
-        {role === "write" && (
-          <div className="stat-card space-y-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <h3 className="text-lg font-semibold text-slate-900">Access Tokens</h3>
-                <p className="text-sm text-slate-600 mt-1">
-                  Create and manage read/write tokens for this vault.
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={loadTokens}
-                disabled={tokensLoading}
-                className="btn-secondary p-2"
-                title="Refresh token list"
-              >
-                <MdRefresh size={18} />
-              </button>
-            </div>
-
-            {/* Create token form */}
-            <form onSubmit={handleCreate} className="p-4 bg-slate-50 rounded-lg border border-slate-200 space-y-4">
-              <h4 className="text-sm font-semibold text-slate-900">Create New Token</h4>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <div className="sm:col-span-1">
-                  <label className="block text-xs font-medium text-slate-700 mb-1">
-                    Name
-                  </label>
-                  <input
-                    type="text"
-                    placeholder="e.g. ci-reader"
-                    value={newTokenName}
-                    onChange={(e) => setNewTokenName(e.target.value)}
-                    className="input-field text-sm"
-                    required
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-slate-700 mb-1">
-                    Role
-                  </label>
-                  <select
-                    value={newTokenRole}
-                    onChange={(e) => setNewTokenRole(e.target.value)}
-                    className="input-field text-sm"
-                  >
-                    <option value="read">Read</option>
-                    <option value="write">Write</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-slate-700 mb-1">
-                    Expires
-                  </label>
-                  <select
-                    value={newTokenExpiry}
-                    onChange={(e) => setNewTokenExpiry(e.target.value)}
-                    className="input-field text-sm"
-                  >
-                    {EXPIRY_OPTIONS.map((opt) => (
-                      <option key={opt.value} value={opt.value}>
-                        {opt.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
+            <div className="flex items-center gap-2">
               <button
                 type="submit"
-                className="btn-primary text-sm"
+                className="sm-btn-accent"
                 disabled={creating}
               >
-                {creating ? "Creating..." : "Create Token"}
+                {creating ? "Creating…" : "Create token"}
               </button>
-            </form>
+              <button
+                type="button"
+                className="sm-btn px-2 py-1.5"
+                onClick={loadTokens}
+                disabled={tokensLoading}
+                aria-label="Refresh tokens"
+              >
+                <MdRefresh size={16} />
+              </button>
+            </div>
+          </form>
 
-            {/* Token list */}
-            {tokensLoading && tokens.length === 0 ? (
-              <p className="text-sm text-slate-500 text-center py-4">Loading tokens...</p>
-            ) : tokens.length === 0 ? (
-              <p className="text-sm text-slate-500 text-center py-4">No tokens found.</p>
-            ) : (
-              <div className="overflow-x-auto -mx-4 sm:mx-0">
-                <table className="w-full text-xs sm:text-sm">
-                  <thead>
-                    <tr className="border-b border-slate-200">
-                      <th className="text-left py-3 px-3 font-semibold text-slate-900">Name</th>
-                      <th className="text-left py-3 px-3 font-semibold text-slate-900">Role</th>
-                      <th className="text-left py-3 px-3 font-semibold text-slate-900 hidden sm:table-cell">Created</th>
-                      <th className="text-left py-3 px-3 font-semibold text-slate-900 hidden md:table-cell">Expires</th>
-                      <th className="text-left py-3 px-3 font-semibold text-slate-900">Status</th>
-                      <th className="text-right py-3 px-3 font-semibold text-slate-900">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {tokens.map((t) => {
-                      const status = tokenStatus(t);
-                      const isLastActiveWrite =
-                        t.role === "write" && status === "active" && activeWriteCount <= 1;
-                      return (
-                        <tr key={t.name} className="border-b border-slate-100 hover:bg-slate-50">
-                          <td className="py-3 px-3 font-mono text-slate-800 max-w-[120px] truncate">
-                            {t.name}
-                          </td>
-                          <td className="py-3 px-3 capitalize text-slate-700">{t.role}</td>
-                          <td className="py-3 px-3 text-slate-500 hidden sm:table-cell whitespace-nowrap">
-                            {new Date(t.created_at).toLocaleDateString()}
-                          </td>
-                          <td className="py-3 px-3 text-slate-500 hidden md:table-cell whitespace-nowrap">
-                            {t.expires_at
-                              ? new Date(t.expires_at).toLocaleDateString()
-                              : "Never"}
-                          </td>
-                          <td className="py-3 px-3">
-                            <StatusBadge status={status} />
-                          </td>
-                          <td className="py-3 px-3">
-                            <div className="flex gap-2 justify-end">
-                              {status === "active" && (
-                                <button
-                                  type="button"
-                                  className="btn-secondary text-xs py-1 px-2"
-                                  onClick={() => handleRotate(t.name)}
-                                  title="Rotate — generates a new token value"
-                                >
-                                  Rotate
-                                </button>
-                              )}
-                              {status === "active" && (
-                                <button
-                                  type="button"
-                                  className="btn-danger text-xs py-1 px-2"
-                                  onClick={() => handleRevoke(t.name)}
-                                  disabled={isLastActiveWrite}
-                                  title={
-                                    isLastActiveWrite
-                                      ? "Cannot revoke the last active write token"
-                                      : "Revoke token"
-                                  }
-                                >
-                                  Revoke
-                                </button>
-                              )}
+          <div className="overflow-x-auto border border-line">
+            <table className="w-full border-collapse">
+              <thead>
+                <tr className="border-b border-line-strong bg-paper text-left">
+                  {["Name", "Role", "Expires", "Status", ""].map((h, i) => (
+                    <th
+                      key={h || i}
+                      className="px-3 py-2 font-mono text-xs font-semibold uppercase tracking-wide text-faint"
+                    >
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {tokens.length === 0 ? (
+                  <tr>
+                    <td
+                      colSpan={5}
+                      className="px-3 py-6 text-center font-mono text-sm text-muted"
+                    >
+                      {tokensLoading ? "Loading…" : "No tokens."}
+                    </td>
+                  </tr>
+                ) : (
+                  tokens.map((t) => {
+                    const status = tokenStatus(t);
+                    const isLastActiveWrite =
+                      t.role === "write" &&
+                      status === "active" &&
+                      activeWriteCount <= 1;
+                    return (
+                      <tr key={t.name} className="border-b border-line">
+                        <td className="px-3 py-2 font-mono text-sm font-bold text-ink">
+                          {t.name}
+                        </td>
+                        <td className="px-3 py-2 font-mono text-sm text-muted">
+                          {t.role}
+                        </td>
+                        <td className="px-3 py-2 font-mono text-xs text-muted">
+                          {t.expires_at
+                            ? new Date(t.expires_at).toLocaleDateString()
+                            : "Never"}
+                        </td>
+                        <td className="px-3 py-2">
+                          <span className={`sm-chip ${STATUS_STYLE[status]}`}>
+                            {status}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2 text-right">
+                          {status === "active" && (
+                            <div className="flex justify-end gap-1">
+                              <button
+                                type="button"
+                                className="sm-btn px-2 py-1 text-xs"
+                                onClick={() => handleRotate(t.name)}
+                              >
+                                Rotate
+                              </button>
+                              <button
+                                type="button"
+                                className="sm-btn-danger px-2 py-1 text-xs disabled:opacity-40"
+                                onClick={() => handleRevoke(t.name)}
+                                disabled={isLastActiveWrite}
+                                title={
+                                  isLastActiveWrite
+                                    ? "Cannot revoke the last active write token"
+                                    : "Revoke"
+                                }
+                              >
+                                Revoke
+                              </button>
                             </div>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )}
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
           </div>
-        )}
-      </div>
+        </Section>
+      )}
+
+      <section className="border border-danger bg-surface">
+        <div className="border-b border-danger px-4 py-2">
+          <h3 className="font-mono text-sm font-semibold text-danger">
+            Danger zone
+          </h3>
+        </div>
+        <div className="px-4 py-3">
+          <button type="button" className="sm-btn-danger" onClick={onLogout}>
+            Sign out
+          </button>
+        </div>
+      </section>
     </div>
   );
 }
