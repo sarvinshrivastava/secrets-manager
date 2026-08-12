@@ -39,6 +39,14 @@ if (typeof globalThis.matchMedia !== "function") {
   });
 }
 
+// jsdom has no scrollIntoView; @headlessui/react (the Add menu) calls it.
+if (
+  typeof Element !== "undefined" &&
+  typeof Element.prototype.scrollIntoView !== "function"
+) {
+  Element.prototype.scrollIntoView = () => {};
+}
+
 if (typeof globalThis.localStorage === "undefined") {
   globalThis.localStorage = createMemoryStorage();
 }

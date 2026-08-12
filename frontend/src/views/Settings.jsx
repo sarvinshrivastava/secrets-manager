@@ -124,8 +124,19 @@ export default function Settings({
   const [newName, setNewName] = useState("");
   const [newRole, setNewRole] = useState("read");
   const [newExpiry, setNewExpiry] = useState("");
+  const [scopeAll, setScopeAll] = useState(true);
+  const [scopeFolders, setScopeFolders] = useState(() => new Set());
   const [creating, setCreating] = useState(false);
   const [revealed, setRevealed] = useState(null); // { label, value }
+
+  function toggleScopeFolder(name) {
+    setScopeFolders((current) => {
+      const next = new Set(current);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  }
 
   async function loadTokens() {
     setTokensLoading(true);
@@ -153,6 +164,11 @@ export default function Settings({
       toast.error("Token name is required");
       return;
     }
+    const scope = scopeAll ? undefined : Array.from(scopeFolders);
+    if (!scopeAll && scope.length === 0) {
+      toast.error("Pick at least one folder or choose all folders");
+      return;
+    }
     setCreating(true);
     try {
       const payload = await createToken(
@@ -160,6 +176,7 @@ export default function Settings({
         name,
         newRole,
         newExpiry ? Number(newExpiry) : undefined,
+        scope,
       );
       setRevealed({
         label: `Token "${payload.name}" created`,
@@ -168,6 +185,8 @@ export default function Settings({
       setNewName("");
       setNewRole("read");
       setNewExpiry("");
+      setScopeAll(true);
+      setScopeFolders(new Set());
       await loadTokens();
     } catch (error) {
       toast.error(`Create failed: ${error.message}`);
@@ -313,6 +332,44 @@ export default function Settings({
                 ))}
               </select>
             </div>
+
+            <fieldset className="space-y-2">
+              <legend className="font-mono text-xs uppercase tracking-wide text-faint">
+                Scope
+              </legend>
+              <label className="flex items-center gap-2 font-mono text-xs text-muted">
+                <input
+                  type="checkbox"
+                  checked={scopeAll}
+                  onChange={(e) => setScopeAll(e.target.checked)}
+                />
+                All folders (*)
+              </label>
+              {!scopeAll && (
+                <div className="flex flex-wrap gap-3 border border-line bg-surface px-3 py-2">
+                  {folders.length === 0 ? (
+                    <span className="font-mono text-xs text-faint">
+                      No folders yet.
+                    </span>
+                  ) : (
+                    folders.map((name) => (
+                      <label
+                        key={name}
+                        className="flex items-center gap-1 font-mono text-xs text-muted"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={scopeFolders.has(name)}
+                          onChange={() => toggleScopeFolder(name)}
+                        />
+                        {name}
+                      </label>
+                    ))
+                  )}
+                </div>
+              )}
+            </fieldset>
+
             <div className="flex items-center gap-2">
               <button
                 type="submit"

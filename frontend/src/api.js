@@ -141,7 +141,12 @@ export function listTokens(token) {
   return apiFetch("/api/tokens", token);
 }
 
-export function createToken(token, name, role, expiresInSeconds) {
+// scope: array of folder names to restrict the token to. Omit / empty / "*"
+// mints an all-folders token (backend default). The backend enforces
+// scope ⊆ caller's scope and returns 403 otherwise.
+export function createToken(token, name, role, expiresInSeconds, scope) {
+  const scoped =
+    Array.isArray(scope) && scope.length > 0 && !scope.includes("*");
   return apiFetch("/api/tokens", token, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -149,6 +154,7 @@ export function createToken(token, name, role, expiresInSeconds) {
       name,
       role,
       ...(expiresInSeconds ? { expires_in_seconds: expiresInSeconds } : {}),
+      ...(scoped ? { scope } : {}),
     }),
   });
 }

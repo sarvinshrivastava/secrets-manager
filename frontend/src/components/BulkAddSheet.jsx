@@ -17,7 +17,7 @@ export default function BulkAddSheet({
   open,
   folders,
   defaultFolder,
-  existingKeys, // Set of key names already in the vault
+  secrets: allSecrets = [], // full vault list [{ key, folder }]
   busy,
   onCommit, // ({ folder, secrets, overwrite }) => Promise
   onClose,
@@ -44,6 +44,15 @@ export default function BulkAddSheet({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [open, onClose]);
+
+  // A bulk paste targets ONE folder. Scope the "already exists" set to the
+  // selected folder so a key present in another folder is not falsely skipped.
+  // Recomputed whenever the folder selector or the vault list changes.
+  const existingKeys = useMemo(
+    () =>
+      new Set(allSecrets.filter((s) => s.folder === folder).map((s) => s.key)),
+    [allSecrets, folder],
+  );
 
   // Re-parse on every keystroke.
   const rows = useMemo(

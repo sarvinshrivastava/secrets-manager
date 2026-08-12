@@ -10,7 +10,7 @@ function setup(overrides = {}) {
       open
       folders={["Root", "Production"]}
       defaultFolder="Root"
-      existingKeys={new Set(["EXISTING_KEY"])}
+      secrets={[{ key: "EXISTING_KEY", folder: "Root" }]}
       busy={false}
       onCommit={onCommit}
       onClose={onClose}
@@ -81,5 +81,42 @@ describe("BulkAddSheet verification ledger", () => {
     expect(screen.queryByText("supersecret")).not.toBeInTheDocument();
     fireEvent.click(screen.getByLabelText(/show values/i));
     expect(screen.getByText("supersecret")).toBeInTheDocument();
+  });
+});
+
+describe("BulkAddSheet folder-scoped exists detection", () => {
+  // A key present in folder A must NOT be flagged as existing when pasting into
+  // folder B, and MUST be flagged when the folder selector switches to A.
+  it("scopes the exists check to the selected folder", () => {
+    render(
+      <BulkAddSheet
+        open
+        folders={["A", "B"]}
+        defaultFolder="B"
+        secrets={[{ key: "K", folder: "A" }]}
+        busy={false}
+        onCommit={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    const textarea = screen.getByPlaceholderText(/paste your \.env/i);
+    fireEvent.change(textarea, { target: { value: "K=1" } });
+
+    // Folder B selected: K exists only in A, so here it is addable.
+    expect(screen.getByText("add")).toBeInTheDocument();
+    expect(screen.queryByText("exists")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: /Add 1 secret → B/ }),
+    ).toBeInTheDocument();
+
+    // Switch the folder selector to A: now K collides and is flagged exists.
+    fireEvent.change(screen.getByDisplayValue("B"), { target: { value: "A" } });
+    expect(screen.getByText("exists")).toBeInTheDocument();
+    expect(screen.queryByText("add")).toBeNull();
+    // The addable count drops to zero (exists is skipped unless overwritten).
+    expect(
+      screen.getByRole("button", { name: /Add 0 secrets → A/ }),
+    ).toBeInTheDocument();
   });
 });

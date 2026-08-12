@@ -90,10 +90,6 @@ export default function App() {
   );
 
   const signedIn = useMemo(() => Boolean(token && role), [token, role]);
-  const existingKeyNames = useMemo(
-    () => new Set(secrets.map((s) => s.key)),
-    [secrets],
-  );
 
   // Apply + persist theme.
   useEffect(() => {
@@ -274,6 +270,26 @@ export default function App() {
     setBusy(true);
     try {
       const result = await bulkCreateSecrets(token, folder, rows, overwrite);
+
+      // Overwritten (and newly added) keys keep the same composite id, so their
+      // stale plaintext would survive in the caches and be revealed/copied next
+      // time. Evict them the same way confirmDelete does.
+      const evictIds = [...(result.updated || []), ...(result.added || [])].map(
+        (k) => secretId(folder, k),
+      );
+      if (evictIds.length > 0) {
+        setSecretCache((current) => {
+          const next = { ...current };
+          evictIds.forEach((id) => delete next[id]);
+          return next;
+        });
+        setSecretMeta((current) => {
+          const next = { ...current };
+          evictIds.forEach((id) => delete next[id]);
+          return next;
+        });
+      }
+
       await refreshSecrets(token);
       setBulkOpen(false);
       const added = result.added?.length ?? 0;
@@ -394,7 +410,7 @@ export default function App() {
             open={bulkOpen}
             folders={folders}
             defaultFolder={defaultFolder}
-            existingKeys={existingKeyNames}
+            secrets={secrets}
             busy={busy}
             onCommit={handleBulkCommit}
             onClose={() => setBulkOpen(false)}
