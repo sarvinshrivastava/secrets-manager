@@ -10,7 +10,7 @@ production incidents.
   normal file on the host at `<app dir>/data/secrets.db`, reachable without
   Docker). Deploying with a named volume instead would start the app against an
   empty DB — see the comment in `docker-compose.yml`.
-- **DB file:** `/app/data/secrets.db` in-container = `/root/apps/secrets-manager/data/secrets.db` on the host (SQLite, WAL mode)
+- **DB file:** `/app/data/secrets.db` in-container = `/root/secrets-manager/data/secrets.db` on the host (SQLite, WAL mode)
 - **Listen:** `127.0.0.1:8000` only — public access is via the host reverse proxy
 - **Health:** `GET /healthz` → `{"status":"ok"}` (no auth)
 
@@ -101,11 +101,11 @@ After fixing the cause, `docker compose up -d` and confirm
   keep-last-N rotation.
 - **Schedule:** daily via cron. Example (adjust paths):
   ```cron
-  15 3 * * * DB_PATH=/root/apps/secrets-manager/data/secrets.db BACKUP_DIR=/var/backups/secret-manager KEEP=14 /root/apps/secrets-manager/scripts/backup.sh >> /var/log/secret-manager-backup.log 2>&1
+  15 3 * * * DB_PATH=/root/secrets-manager/data/secrets.db BACKUP_DIR=/var/backups/secret-manager KEEP=14 /root/secrets-manager/scripts/backup.sh >> /var/log/secret-manager-backup.log 2>&1
   ```
 - **Reaching the DB from the host:** it is a plain bind-mounted file — point
   `DB_PATH` straight at `<app dir>/data/secrets.db` (on the VPS:
-  `/root/apps/secrets-manager/data/secrets.db`). No volume-mountpoint lookup and
+  `/root/secrets-manager/data/secrets.db`). No volume-mountpoint lookup and
   no `docker cp` dance needed. `sqlite3 ".backup"` is safe while the container
   runs.
 - **`sqlite3` must be installed on the host** (`apt-get install -y sqlite3`) —
@@ -130,7 +130,7 @@ sqlite3 /path/to/secrets-<TS>.db 'PRAGMA integrity_check;'   # must print: ok
 
 # 3. Replace the live DB (the bind-mounted host file). Remove stale WAL/SHM
 #    sidecars so the engine doesn't replay an old WAL over the restored file.
-DATA=/root/apps/secrets-manager/data        # the bind-mount source on the host
+DATA=/root/secrets-manager/data        # the bind-mount source on the host
 sudo rm -f "$DATA"/secrets.db "$DATA"/secrets.db-wal "$DATA"/secrets.db-shm
 sudo cp /path/to/secrets-<TS>.db "$DATA"/secrets.db
 sudo chown 1000:1000 "$DATA"/secrets.db    # must be owned by the node user (uid 1000)
@@ -212,7 +212,7 @@ Symptoms: writes fail with `SQLITE_FULL` / `disk I/O error`, container may keep
 restarting, health check flaps.
 
 1. Check space: `df -h` and, for the data dir,
-   `du -sh /root/apps/secrets-manager/data`.
+   `du -sh /root/secrets-manager/data`.
 2. Common culprits and fixes:
    - **Docker container logs** — capped in compose (`max-size:10m,max-file:3`).
      If an older deploy wasn't capped: `docker system prune` and truncate
@@ -248,7 +248,7 @@ changes.
 
 **What the run does, in order**
 
-1. SSHes to `${{ secrets.VPS_HOST }}` as `root`, `cd /root/apps/secrets-manager`,
+1. SSHes to `${{ secrets.VPS_HOST }}` as `root`, `cd /root/secrets-manager`,
    and aborts unless that is a git repo.
 2. Records the current SHA as the rollback target.
 3. **Backs up the DB, fail-closed** via `scripts/backup.sh`
@@ -290,9 +290,9 @@ that is a manual-intervention incident (check `.env`, disk space, and §4).
   every deploy aborts at the backup step.
 - **`curl` installed on the host** — the health gate uses it; the deploy aborts
   early if it's missing, before changing anything.
-- **`data/` owned by uid 1000** — `chown 1000:1000 /root/apps/secrets-manager/data`
+- **`data/` owned by uid 1000** — `chown 1000:1000 /root/secrets-manager/data`
   (bind mount + `USER node`; see §1).
-- The checkout at `/root/apps/secrets-manager` must already exist with its `.env`
+- The checkout at `/root/secrets-manager` must already exist with its `.env`
   in place. The workflow updates an existing deployment; it does not clone.
 
 ### Reverse proxy — CHANGED in this release

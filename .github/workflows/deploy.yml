@@ -20,6 +20,13 @@ on:
         required: false
         default: false
         type: boolean
+      # This service predates the /root/apps/<name> convention every other
+      # service on the box follows — its checkout lives at /root/secrets-manager.
+      # Exposed as an input so the path is never a buried constant again.
+      app_dir:
+        description: "Checkout directory on the VPS"
+        required: false
+        default: "/root/secrets-manager"
 
 # One deploy at a time. Two overlapping runs would race on the same working
 # tree, the same containers, and — worst case — each other's rollback, leaving
@@ -38,6 +45,7 @@ jobs:
         env:
           DEPLOY_REF: ${{ inputs.ref }}
           SKIP_BACKUP: ${{ inputs.skip_backup }}
+          APP_DIR_IN: ${{ inputs.app_dir }}
         with:
           # Credentials come STRAIGHT FROM GITHUB ACTIONS REPO SECRETS.
           #
@@ -53,12 +61,12 @@ jobs:
           # Forward the dispatch inputs as remote env vars instead of
           # interpolating ${{ }} into the script body — keeps run-time input out
           # of the shell text (no script injection) and out of the log.
-          envs: DEPLOY_REF,SKIP_BACKUP
+          envs: DEPLOY_REF,SKIP_BACKUP,APP_DIR_IN
           command_timeout: 20m
           script: |
             set -euo pipefail
 
-            APP_DIR=/root/apps/secrets-manager
+            APP_DIR="${APP_DIR_IN:-/root/secrets-manager}"
             HEALTH_URL=http://127.0.0.1:8000/healthz
             FINGERPRINT_URL=http://127.0.0.1:8000/api/folders
             DEPLOY_REF="${DEPLOY_REF:-main}"
