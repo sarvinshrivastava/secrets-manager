@@ -9,6 +9,12 @@ import { RateLimiter } from "../rate-limit.js";
 
 const MAX_VALUE_BYTES = 32768;
 
+function normalizeFolder(folder) {
+  return typeof folder === "string" && folder.trim().length > 0
+    ? folder.trim()
+    : "Root";
+}
+
 export function createSecretsRouter(
   db,
   crypto,
@@ -57,10 +63,7 @@ export function createSecretsRouter(
       return res.status(400).json({ detail: "Invalid value" });
     }
 
-    const folderName =
-      typeof folder === "string" && folder.trim().length > 0
-        ? folder.trim()
-        : "Root";
+    const folderName = normalizeFolder(folder);
 
     if (!isValidFolderName(folderName)) {
       return res.status(400).json({ detail: "Invalid folder name" });
@@ -100,10 +103,7 @@ export function createSecretsRouter(
   router.post("/bulk", requireAuth, requireWriteAccess, (req, res) => {
     const { folder, secrets, overwrite } = req.body || {};
 
-    const folderName =
-      typeof folder === "string" && folder.trim().length > 0
-        ? folder.trim()
-        : "Root";
+    const folderName = normalizeFolder(folder);
     if (!isValidFolderName(folderName)) {
       return res.status(400).json({ detail: "Invalid folder name" });
     }

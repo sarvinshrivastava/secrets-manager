@@ -5,6 +5,9 @@ import { extractToken, getClientIp, parseNamedToken } from "../utils.js";
 // (`<name>.<secret>`) never hit this path — they verify exactly one hash.
 const MAX_SCAN_TOKENS = 50;
 
+// Audit-detail label for a failed auth, keyed by failure reason.
+const AUTH_FAIL_DETAIL = { revoked: "Token revoked", expired: "Token expired" };
+
 export function createAuthMiddleware(db, crypto, trustedProxyIps) {
   function writeAudit(
     req,
@@ -104,12 +107,7 @@ export function createAuthMiddleware(db, crypto, trustedProxyIps) {
         writeAudit(req, {
           action: "auth",
           status: "failed",
-          details:
-            result.reason === "revoked"
-              ? "Token revoked"
-              : result.reason === "expired"
-                ? "Token expired"
-                : "Invalid token",
+          details: AUTH_FAIL_DETAIL[result.reason] ?? "Invalid token",
         });
         return unauthorized(res, result.detail);
       }

@@ -199,11 +199,18 @@ with a digit. `folder` defaults to `Root` when omitted.
   "secrets": [ { "key": "API_KEY", "value": "abc" }, { "key": "DB_URL", "value": "..." } ],
   "overwrite": ["API_KEY"]        // keys allowed to replace an existing secret
 }
-// response
-{ "added": ["DB_URL"], "skipped": ["..."], "invalid": ["..."] }
+// response (HTTP 207)
+{
+  "added":   ["DB_URL"],
+  "updated": ["API_KEY"],
+  "skipped": ["EXISTING_KEY"],
+  "invalid": [ { "key": "1BAD", "reason": "invalid key" } ],
+  "folder":  "ServiceA"
+}
 ```
-Keys not listed in `overwrite` are skipped if they already exist; malformed keys
-are reported in `invalid`.
+Keys not listed in `overwrite` are skipped if they already exist (reported in
+`skipped`); keys in `overwrite` that exist are replaced (reported in `updated`);
+malformed keys/values are reported in `invalid` as `{ key, reason }` objects.
 
 **Folders**
 

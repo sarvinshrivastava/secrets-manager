@@ -66,7 +66,13 @@ export class CryptoManager {
 
   hashToken(token, salt = null) {
     const chosenSalt = salt || crypto.randomBytes(16);
-    const digest = crypto.pbkdf2Sync(token, chosenSalt, 210000, 32, "sha256");
+    const digest = crypto.pbkdf2Sync(
+      token,
+      chosenSalt,
+      MASTER_KEY_ITERATIONS,
+      32,
+      "sha256",
+    );
     return { salt: chosenSalt, digest };
   }
 
@@ -74,10 +80,17 @@ export class CryptoManager {
   // auth attempt does NOT block the event loop (the hot path for every request).
   hashTokenAsync(token, salt) {
     return new Promise((resolve, reject) => {
-      crypto.pbkdf2(token, salt, 210000, 32, "sha256", (err, digest) => {
-        if (err) reject(err);
-        else resolve(digest);
-      });
+      crypto.pbkdf2(
+        token,
+        salt,
+        MASTER_KEY_ITERATIONS,
+        32,
+        "sha256",
+        (err, digest) => {
+          if (err) reject(err);
+          else resolve(digest);
+        },
+      );
     });
   }
 

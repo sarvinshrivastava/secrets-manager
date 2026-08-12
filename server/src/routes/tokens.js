@@ -1,15 +1,10 @@
 import crypto from "node:crypto";
 import { Router } from "express";
-import { isValidFolderName } from "../utils.js";
+import { isValidFolderName, TOKEN_NAME_REGEX } from "../utils.js";
 
-const TOKEN_NAME_REGEX = /^[A-Za-z0-9_-]{1,64}$/;
 // Clamp token lifetime — a huge expires_in_seconds (e.g. 1e20) overflows Date
 // arithmetic and toISOString() throws → 500. 10 years is a sane ceiling.
 const MAX_EXPIRES_IN_SECONDS = 10 * 365 * 24 * 60 * 60;
-
-function utcNowIso() {
-  return new Date().toISOString();
-}
 
 // Validate + normalize a scope request into a CSV string. Accepts an array of
 // folder names, or ["*"]/"*". Returns { csv } or { error }.

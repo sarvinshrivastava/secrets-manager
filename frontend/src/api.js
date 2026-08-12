@@ -96,7 +96,7 @@ export function createSecret(token, key, value, folder) {
   });
 }
 
-// POST /api/secrets/bulk -> { added, skipped, invalid }
+// POST /api/secrets/bulk -> { added, updated, skipped, invalid, folder }
 export function bulkCreateSecrets(token, folder, secrets, overwrite = []) {
   return apiFetch("/api/secrets/bulk", token, {
     method: "POST",
