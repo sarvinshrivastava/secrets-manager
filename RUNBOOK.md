@@ -57,7 +57,36 @@ production incidents.
 
 ---
 
-## 2. Backups
+## 2. Container crash-looping / won't start
+
+**Symptom:** `docker compose ps` shows the `secret-manager` container as
+`Restarting` (or it never reaches `healthy` and keeps bouncing).
+
+**Diagnose — read the boot logs first:**
+```bash
+docker compose logs --tail=50 secret-manager
+```
+Look for one of these two fatal signatures near the end of the log:
+
+| Log signature | Cause | Remedy |
+|---|---|---|
+| `FATAL: all N stored secret(s) failed to decrypt` (from `index.js`) | Wrong `SECRET_MANAGER_MASTER_KEY` — the key doesn't match the one the DB was encrypted with (typo, unset, or rotated key over an old DB). The app hard-exits rather than serve a DB it can't decrypt. | Restore the correct `SECRET_MANAGER_MASTER_KEY` in `.env` and restart. If the key is truly lost, the values are unrecoverable — restore a DB + key pair that match (see §4), or start fresh (see §6). |
+| `Error: ...` on startup about zero write tokens / `db.countWriteTokens() === 0` | No usable write token — the server refuses to boot without at least one active write path (bootstrap env token missing AND no runtime write token in the DB). | Set `SECRET_MANAGER_ADMIN_TOKEN` (bootstrap write token) in `.env` and `docker compose up -d` — it's re-upserted on startup (see §7). If the DB itself is the problem, restore from backup (§4). |
+
+After fixing the cause, `docker compose up -d` and confirm
+`docker compose ps` reaches `healthy`.
+
+> **Unhealthy ≠ restarting.** A container that stays `Up (unhealthy)` (e.g. a
+> broken DB handle returning `/healthz` 503) does NOT exit, so
+> `restart: unless-stopped` never fires. The `autoheal` sidecar (see
+> `docker-compose.yml`) handles that case by restarting unhealthy containers.
+> Regardless, run **external uptime monitoring that polls `GET /healthz` and
+> alerts** on non-200 — a 503 on its own does not page anyone, and without the
+> autoheal sidecar it never auto-recovers.
+
+---
+
+## 3. Backups
 
 - **Script:** `scripts/backup.sh` — WAL-safe hot snapshot via `sqlite3 ".backup"`
   (never `cp`), timestamped output, `PRAGMA integrity_check` on every snapshot,
@@ -80,7 +109,7 @@ production incidents.
 
 ---
 
-## 3. Restore drill (practice this before you need it)
+## 4. Restore drill (practice this before you need it)
 
 ```bash
 # 1. Stop the service so nothing writes mid-restore.
@@ -108,11 +137,11 @@ curl -s -H "Authorization: Bearer <READ_TOKEN>" \
 **Restore only works with the SAME `SECRET_MANAGER_MASTER_KEY` that was in use
 when the backup was taken** — the values are AES-256-GCM encrypted with a key
 derived from it. Restoring an old DB under a new master key strands every secret
-(see §5).
+(see §6).
 
 ---
 
-## 4. Integrity check
+## 5. Integrity check
 
 Run any time you suspect corruption (unclean shutdown, disk errors):
 ```bash
@@ -121,11 +150,11 @@ sqlite3 <db> 'PRAGMA integrity_check;'            # ok = healthy
 sqlite3 <db> 'PRAGMA wal_checkpoint(TRUNCATE);'   # optional: fold WAL into main
 ```
 If `integrity_check` reports anything other than `ok`, stop the service and
-restore from the most recent good backup (§3).
+restore from the most recent good backup (§4).
 
 ---
 
-## 5. Master-key rotation caveat
+## 6. Master-key rotation caveat
 
 Secret values are encrypted with a key derived (PBKDF2-SHA256) from
 `SECRET_MANAGER_MASTER_KEY`. **Rotating the master key does NOT re-encrypt
@@ -146,7 +175,7 @@ Token hashes are independent of the master key and survive rotation.
 
 ---
 
-## 6. Lost / leaked admin (write) token recovery
+## 7. Lost / leaked admin (write) token recovery
 
 Bootstrap tokens are re-upserted from env on every startup (`index.js`): setting
 `SECRET_MANAGER_ADMIN_TOKEN` / `SECRET_MANAGER_READ_TOKEN` and restarting
@@ -166,7 +195,7 @@ re-establishes the `admin` / `reader` tokens with the new values.
 
 ---
 
-## 7. Disk-full response
+## 8. Disk-full response
 
 Symptoms: writes fail with `SQLITE_FULL` / `disk I/O error`, container may keep
 restarting, health check flaps.

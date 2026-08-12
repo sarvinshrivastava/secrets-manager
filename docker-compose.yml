@@ -3,6 +3,12 @@ services:
     build: .
     container_name: secret-manager
     restart: unless-stopped
+    # `restart: unless-stopped` only reacts to process EXIT, never to an
+    # `unhealthy` healthcheck. A broken DB handle -> /healthz 503 forever with no
+    # recovery. This label opts the container into the autoheal sidecar below,
+    # which restarts any container Docker reports as unhealthy.
+    labels:
+      autoheal: "true"
     env_file: .env
     # Bind to loopback ONLY. Docker publishes on all interfaces by default and
     # its iptables NAT bypasses the host firewall — that would expose the
@@ -44,6 +50,24 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  # Watches every container labeled `autoheal=true` and restarts it whenever
+  # Docker marks it `unhealthy` — the recovery path `restart: unless-stopped`
+  # can't provide (that only fires on process exit). Mounts the Docker socket
+  # READ-ONLY so it can inspect health and issue restarts, nothing more.
+  # `restart: always` keeps the watchdog itself alive across reboots.
+  autoheal:
+    # Pin a digest/tag in production if you want reproducible pulls; :latest is
+    # fine for a low-risk sidecar that only restarts unhealthy containers.
+    image: willfarrell/autoheal:latest
+    container_name: secret-manager-autoheal
+    restart: always
+    environment:
+      AUTOHEAL_CONTAINER_LABEL: autoheal
+      # Grace period after a restart before it's eligible to be healed again.
+      AUTOHEAL_START_PERIOD: "30"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
 
 volumes:
   secret-manager-data:
