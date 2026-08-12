@@ -1,9 +1,16 @@
 import { Router } from "express";
 
-export function createAuditRouter(db, { requireAuth }) {
+export function createAuditRouter(db, { requireAuth, requireWriteAccess }) {
   const router = Router();
 
-  router.get("/", requireAuth, (req, res) => {
+  // Audit logs leak every key name, token name, and client IP ACROSS ALL scopes
+  // — restrict to UNSCOPED admins (`*`). A folder-scoped write token must never
+  // read the global audit log.
+  router.get("/", requireAuth, requireWriteAccess, (req, res) => {
+    if (req.auth.scope !== "*") {
+      return res.status(403).json({ detail: "Admin token required" });
+    }
+
     const action =
       typeof req.query.action === "string" && req.query.action.trim()
         ? req.query.action.trim()
@@ -22,8 +29,12 @@ export function createAuditRouter(db, { requireAuth }) {
         : null;
 
     const limitRaw =
-      typeof req.query.limit === "string" ? Number.parseInt(req.query.limit, 10) : 100;
-    const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 500) : 100;
+      typeof req.query.limit === "string"
+        ? Number.parseInt(req.query.limit, 10)
+        : 100;
+    const limit = Number.isFinite(limitRaw)
+      ? Math.min(Math.max(limitRaw, 1), 500)
+      : 100;
 
     const events = db.listAuditLogs({ action, status, key, tokenName, limit });
     res.json({ events });

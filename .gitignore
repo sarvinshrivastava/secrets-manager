@@ -1,6 +1,10 @@
 .env
 */.env
-.github
+
+# NOTE: .github/ is intentionally NOT ignored. This service is consumed by
+# GitHub Actions across other repos; its own Actions workflows must be
+# committable. (Previously `.github` was ignored here, which silently blocked
+# committing any workflow.)
 
 node_modules/
 frontend/node_modules/
@@ -10,3 +14,8 @@ frontend/dist/
 data/*.db
 data/*.db-shm
 data/*.db-wal
+
+# macOS cruft. .DS_Store is currently TRACKED in git — this only stops new ones.
+# Untrack the existing files with (run by a human, not automated):
+#   git rm --cached .DS_Store && git commit -m "chore: untrack .DS_Store"
+.DS_Store

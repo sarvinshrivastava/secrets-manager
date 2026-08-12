@@ -32,14 +32,22 @@ export function createApp(settings, db, crypto, rateLimiter) {
   const app = express();
   app.set("trust proxy", true);
   app.disable("x-powered-by");
-  app.use(express.json({ limit: "64kb" }));
+  // 256kb: a single secret value caps at 32kb, but POST /api/secrets/bulk carries
+  // many at once. Still a sane cap that bounds request-body memory / DoS.
+  app.use(express.json({ limit: "256kb" }));
 
   app.use(securityHeaders);
   app.use(globalRateLimit);
 
-  // Health check (no auth)
+  // Health check (no auth). Probes the DB with a cheap `SELECT 1` so a broken /
+  // closed database surfaces as 503 instead of a falsely-healthy 200.
   app.get("/healthz", (_req, res) => {
-    res.json({ status: "ok" });
+    try {
+      db.db.prepare("SELECT 1").get();
+      res.json({ status: "ok" });
+    } catch {
+      res.status(503).json({ status: "error" });
+    }
   });
 
   // Auth identity
@@ -71,19 +79,32 @@ export function createApp(settings, db, crypto, rateLimiter) {
   // Audit logs
   app.use("/api/audit-logs", createAuditRouter(db, authHandlers));
 
-  // Frontend static files
+  // Terminal JSON 404 for unknown /api/* routes — must sit BEFORE the SPA
+  // fallback so an unknown API path returns JSON, not index.html.
+  app.use("/api", (_req, res) => res.status(404).json({ detail: "Not found" }));
+
+  // Frontend static files, served at the root. Registered AFTER all /api
+  // routes, the /api JSON-404, and /healthz, so those win; every remaining
+  // path falls through to the SPA entry point for client-side routing.
   const frontendDistPath = path.resolve(__dirname, "../../frontend/dist");
-  app.get("/secret-manager", (_req, res) => res.redirect("/secret-manager/"));
-  app.use("/secret-manager", express.static(frontendDistPath));
-  app.get("/secret-manager/*", (_req, res) => {
+  app.use(express.static(frontendDistPath));
+  app.get("*", (_req, res) => {
     res.sendFile(path.join(frontendDistPath, "index.html"));
   });
 
-  // Global error handler
+  // Global error handler.
+  // - Honor err.status/err.statusCode (malformed JSON -> 400, oversized body -> 413)
+  //   instead of blanket 500.
+  // - NEVER log err itself: body-parser attaches err.body = the raw request body,
+  //   which for /api/secrets and /api/import is PLAINTEXT SECRETS. Log only a
+  //   redacted line (message + status).
   app.use((err, _req, res, _next) => {
-    console.error(err);
+    const status = err.status || err.statusCode || 500;
+    console.error(`Request error: status=${status} message=${err.message}`);
     if (res.headersSent) return;
-    res.status(500).json({ detail: "Internal server error" });
+    const detail =
+      status === 500 ? "Internal server error" : err.message || "Error";
+    res.status(status).json({ detail });
   });
 
   return app;

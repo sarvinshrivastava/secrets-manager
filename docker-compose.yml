@@ -1,16 +1,73 @@
-version: "3.9"
 services:
   secret-manager:
     build: .
     container_name: secret-manager
     restart: unless-stopped
+    # `restart: unless-stopped` only reacts to process EXIT, never to an
+    # `unhealthy` healthcheck. A broken DB handle -> /healthz 503 forever with no
+    # recovery. This label opts the container into the autoheal sidecar below,
+    # which restarts any container Docker reports as unhealthy.
+    labels:
+      autoheal: "true"
     env_file: .env
+    # Bind to loopback ONLY. Docker publishes on all interfaces by default and
+    # its iptables NAT bypasses the host firewall — that would expose the
+    # internal-only routes (/api/tokens, /api/exports, /api/import, ...) straight
+    # to the internet. The host reverse proxy (Nginx/Caddy/Traefik) is the only
+    # thing that should reach the container; it terminates TLS and forwards to
+    # 127.0.0.1:8000.
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
+    # Resource caps: contain a runaway (memory leak, fork bomb) so a single
+    # service can't take down the whole VPS. Compose v2 honors these at the
+    # service level. Raise mem_limit if PBKDF2/large imports OOM.
+    mem_limit: 256m
+    pids_limit: 256
+    # Named volume, NOT a bind mount. A `./data` bind mount is created
+    # root-owned on a fresh clone; the image's `node` user (uid 1000) then can't
+    # create secrets.db -> SQLITE_CANTOPEN -> restart loop. A named volume is
+    # seeded from the image's already-node-owned /app/data, so writes succeed.
     volumes:
-      - ./data:/app/data
+      - secret-manager-data:/app/data
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/healthz"]
+      # `curl` is NOT present in node:22-bookworm-slim, so a curl-based check can
+      # never pass and the container stays permanently `unhealthy`. Node 22 ships
+      # a stable global fetch — use it instead. start_period covers PBKDF2 key
+      # derivation + the startup encryption migration, which delay first boot.
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
       interval: 30s
       timeout: 5s
       retries: 3
+      start_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Watches every container labeled `autoheal=true` and restarts it whenever
+  # Docker marks it `unhealthy` — the recovery path `restart: unless-stopped`
+  # can't provide (that only fires on process exit). Mounts the Docker socket
+  # READ-ONLY so it can inspect health and issue restarts, nothing more.
+  # `restart: always` keeps the watchdog itself alive across reboots.
+  autoheal:
+    # Pin a digest/tag in production if you want reproducible pulls; :latest is
+    # fine for a low-risk sidecar that only restarts unhealthy containers.
+    image: willfarrell/autoheal:latest
+    container_name: secret-manager-autoheal
+    restart: always
+    environment:
+      AUTOHEAL_CONTAINER_LABEL: autoheal
+      # Grace period after a restart before it's eligible to be healed again.
+      AUTOHEAL_START_PERIOD: "30"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+volumes:
+  secret-manager-data:

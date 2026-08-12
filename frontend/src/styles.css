@@ -2,60 +2,90 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  --paper: #f7faf9;
+  --surface: #ffffff;
+  --ink: #16211e;
+  --muted: #5c6b66;
+  --faint: #8ca09a;
+  --line: #dce5e1;
+  --line-strong: #b9c8c2;
+  --accent: #177e6d;
+  --accent-soft: #e2f1ec;
+  --ok: #1e8a4a;
+  --warn: #a87a12;
+  --danger: #b3362b;
+}
+
+.dark {
+  --paper: #101816;
+  --surface: #16211e;
+  --ink: #e4edea;
+  --muted: #93a8a1;
+  --faint: #64786f;
+  --line: #24332f;
+  --line-strong: #3a4d47;
+  --accent: #3fbfa8;
+  --accent-soft: #16302b;
+  --ok: #1e8a4a;
+  --warn: #a87a12;
+  --danger: #b3362b;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background-color: var(--paper);
+  color: var(--ink);
+  font-family:
+    ui-monospace, Menlo, Monaco, "Cascadia Code", "Segoe UI Mono", monospace;
+  -webkit-font-smoothing: antialiased;
+}
+
 @layer components {
-  .sidebar-nav-item {
-    @apply flex items-center gap-3 px-4 py-3 rounded-lg cursor-pointer transition-colors;
+  /* Hairline-bordered buttons — one accent, radius 0. */
+  .sm-btn {
+    @apply inline-flex items-center justify-center gap-2 border border-line-strong bg-surface px-3 py-1.5 font-mono text-sm text-ink transition-colors;
   }
-  
-  .sidebar-nav-item:hover {
-    @apply bg-slate-100;
+  .sm-btn:hover {
+    @apply border-accent;
   }
-  
-  .sidebar-nav-item.active {
-    @apply bg-green-100 text-green-700;
+  .sm-btn:disabled {
+    @apply cursor-not-allowed opacity-50;
   }
-  
-  .stat-card {
-    @apply bg-white rounded-lg p-6 shadow-sm border border-slate-200;
+  .sm-btn-accent {
+    @apply inline-flex items-center justify-center gap-2 border border-accent bg-accent px-3 py-1.5 font-mono text-sm font-semibold text-surface transition-opacity;
   }
-  
-  .secret-card {
-    @apply bg-white rounded-lg p-4 shadow-sm border border-slate-200 hover:shadow-md transition-shadow;
+  .sm-btn-accent:hover {
+    @apply opacity-90;
   }
-  
-  .btn-primary {
-    @apply px-4 py-2 bg-green-600 text-white rounded-lg font-medium hover:bg-green-700 transition-colors;
+  .sm-btn-accent:disabled {
+    @apply cursor-not-allowed opacity-50;
   }
-  
-  .btn-secondary {
-    @apply px-4 py-2 bg-slate-200 text-slate-900 rounded-lg font-medium hover:bg-slate-300 transition-colors;
+  .sm-btn-danger {
+    @apply inline-flex items-center justify-center gap-2 border border-danger bg-danger px-3 py-1.5 font-mono text-sm font-semibold text-white transition-opacity;
   }
-  
-  .btn-danger {
-    @apply px-4 py-2 bg-red-600 text-white rounded-lg font-medium hover:bg-red-700 transition-colors;
+  .sm-btn-danger:disabled {
+    @apply cursor-not-allowed opacity-50;
   }
-  
-  .input-field {
-    @apply w-full px-3 py-2 border border-slate-300 rounded-lg font-medium focus:outline-none focus:border-green-500 focus:ring-1 focus:ring-green-500;
+
+  .sm-input {
+    @apply w-full border border-line-strong bg-surface px-3 py-2 font-mono text-sm text-ink outline-none placeholder:text-faint;
   }
-  
-  .badge {
-    @apply inline-flex items-center gap-1 px-2 py-1 rounded text-sm font-medium;
+  .sm-input:focus {
+    @apply border-accent;
   }
-  
-  .badge-success {
-    @apply bg-green-100 text-green-700;
+
+  /* Verb-colored / state chips. Color reserved for state, never decoration. */
+  .sm-chip {
+    @apply inline-flex items-center gap-1 border px-2 py-0.5 font-mono text-xs;
   }
-  
-  .badge-warning {
-    @apply bg-yellow-100 text-yellow-700;
-  }
-  
-  .badge-error {
-    @apply bg-red-100 text-red-700;
-  }
-  
+
   .sm-toast {
-    @apply text-sm font-medium;
+    @apply font-mono text-sm;
   }
 }

@@ -1,39 +1,55 @@
 /** @type {import('tailwindcss').Config} */
 export default {
   content: ["./index.html", "./src/**/*.{js,jsx}"],
+  darkMode: "class",
   theme: {
+    // Radius 0 everywhere — the vault is a ledger, not a card deck.
+    borderRadius: {
+      none: "0",
+      sm: "0",
+      DEFAULT: "0",
+      md: "0",
+      lg: "0",
+      xl: "0",
+      "2xl": "0",
+      "3xl": "0",
+      full: "0",
+    },
     extend: {
       colors: {
-        primary: {
-          50: "#f0fdf4",
-          100: "#dcfce7",
-          200: "#bbf7d0",
-          300: "#86efac",
-          400: "#4ade80",
-          500: "#22c55e",
-          600: "#16a34a",
-          700: "#15803d",
-          800: "#166534",
-          900: "#145231",
-        },
-        slate: {
-          50: "#f8fafc",
-          100: "#f1f5f9",
-          200: "#e2e8f0",
-          300: "#cbd5e1",
-          400: "#94a3b8",
-          500: "#64748b",
-          600: "#475569",
-          700: "#334155",
-          800: "#1e293b",
-          900: "#0f172a",
-        },
+        paper: "var(--paper)",
+        surface: "var(--surface)",
+        ink: "var(--ink)",
+        muted: "var(--muted)",
+        faint: "var(--faint)",
+        line: "var(--line)",
+        "line-strong": "var(--line-strong)",
+        accent: "var(--accent)",
+        "accent-soft": "var(--accent-soft)",
+        ok: "var(--ok)",
+        warn: "var(--warn)",
+        danger: "var(--danger)",
       },
       fontFamily: {
-        sans: ["Source Sans 3", "Segoe UI", "sans-serif"],
-      },
-      backgroundImage: {
-        gradient: "radial-gradient(circle at top right, #e6f7fb, #f4f6f8)",
+        // Monospace is the display voice: keys, values, wordmark, headings, labels.
+        mono: [
+          "ui-monospace",
+          "Menlo",
+          "Monaco",
+          "Cascadia Code",
+          "Segoe UI Mono",
+          "Roboto Mono",
+          "monospace",
+        ],
+        // System sans is reserved for prose only.
+        sans: [
+          "system-ui",
+          "-apple-system",
+          "Segoe UI",
+          "Roboto",
+          "Helvetica Neue",
+          "sans-serif",
+        ],
       },
     },
   },

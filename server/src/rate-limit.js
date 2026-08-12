@@ -1,33 +1,64 @@
+// Fixed-window per-identity rate limiter.
+//
+// Each identity maps to a single { windowStart, count } bucket (O(1) memory per
+// identity, no per-request timestamp arrays). A periodic sweep evicts buckets
+// whose window has fully elapsed so idle identities do not leak memory on a
+// long-running server. allow() returns { allowed, retryAfter } so callers can
+// emit a correct Retry-After header on 429.
 export class RateLimiter {
-  constructor(maxRequestsPerWindow, windowSeconds = 60) {
+  constructor(
+    maxRequestsPerWindow,
+    windowSeconds = 60,
+    { autoSweep = true } = {},
+  ) {
     this.maxRequests = maxRequestsPerWindow;
     this.windowMs = windowSeconds * 1000;
     this.buckets = new Map();
+    this.sweepTimer = null;
+
+    if (autoSweep) {
+      // Sweep once per window. unref() so this timer never keeps the process
+      // alive (important for tests and graceful shutdown).
+      this.sweepTimer = setInterval(() => this.sweep(), this.windowMs);
+      if (typeof this.sweepTimer.unref === "function") this.sweepTimer.unref();
+    }
   }
 
   allow(identity) {
     const now = Date.now();
-    const cutoff = now - this.windowMs;
+    const bucket = this.buckets.get(identity);
 
-    const bucket = this.buckets.get(identity) || [];
-    while (bucket.length > 0 && bucket[0] < cutoff) {
-      bucket.shift();
+    if (!bucket || now - bucket.windowStart >= this.windowMs) {
+      // New identity or window rolled over — start a fresh window.
+      this.buckets.set(identity, { windowStart: now, count: 1 });
+      return { allowed: true, retryAfter: 0 };
     }
 
-    // Evict empty buckets to prevent memory leak on long-running servers
-    if (bucket.length === 0) {
-      this.buckets.delete(identity);
-      this.buckets.set(identity, [now]);
-      return true;
+    if (bucket.count >= this.maxRequests) {
+      const retryAfter = Math.max(
+        1,
+        Math.ceil((bucket.windowStart + this.windowMs - now) / 1000),
+      );
+      return { allowed: false, retryAfter };
     }
 
-    if (bucket.length >= this.maxRequests) {
-      this.buckets.set(identity, bucket);
-      return false;
-    }
+    bucket.count += 1;
+    return { allowed: true, retryAfter: 0 };
+  }
 
-    bucket.push(now);
-    this.buckets.set(identity, bucket);
-    return true;
+  sweep() {
+    const now = Date.now();
+    for (const [identity, bucket] of this.buckets) {
+      if (now - bucket.windowStart >= this.windowMs) {
+        this.buckets.delete(identity);
+      }
+    }
+  }
+
+  stop() {
+    if (this.sweepTimer) {
+      clearInterval(this.sweepTimer);
+      this.sweepTimer = null;
+    }
   }
 }

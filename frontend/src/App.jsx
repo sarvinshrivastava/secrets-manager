@@ -1,32 +1,29 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Toaster, toast } from "react-hot-toast";
 import {
   getMe,
   listSecrets,
+  getFolders,
   getSecret,
   createSecret,
+  bulkCreateSecrets,
   deleteSecret,
-  renameFolder,
+  setUnauthorizedHandler,
 } from "./api.js";
+import { secretId } from "./lib/format.js";
 import Login from "./views/Login.jsx";
-import Dashboard from "./views/Dashboard.jsx";
-import Secrets from "./views/Secrets.jsx";
-import AuditLogs from "./views/AuditLogs.jsx";
+import Vault from "./views/Vault.jsx";
+import AuditList from "./views/AuditList.jsx";
 import Settings from "./views/Settings.jsx";
-import Sidebar from "./components/Sidebar.jsx";
-import CreateDrawer from "./components/CreateDrawer.jsx";
-import DeleteDialog from "./components/DeleteDialog.jsx";
+import TopBar from "./components/TopBar.jsx";
+import ConfirmDialog from "./components/ConfirmDialog.jsx";
+import AddSingleDialog from "./components/AddSingleDialog.jsx";
+import BulkAddSheet from "./components/BulkAddSheet.jsx";
 
 const SESSION_TOKEN_KEY = "sm_token_session";
 const PERSIST_TOKEN_KEY = "sm_token_persist";
-
-const EMPTY_DRAFT = {
-  key: "",
-  value: "",
-  description: "",
-  folder: "Root",
-  tags: "",
-};
+const DEFAULT_FOLDER_KEY = "sm_default_folder";
+const THEME_KEY = "sm_theme";
 
 function storeToken(token, remember) {
   if (remember) {
@@ -43,6 +40,17 @@ function clearStoredToken() {
   sessionStorage.removeItem(SESSION_TOKEN_KEY);
 }
 
+function initialTheme() {
+  const stored = localStorage.getItem(THEME_KEY);
+  if (stored === "light" || stored === "dark") return stored;
+  if (typeof window !== "undefined" && window.matchMedia) {
+    return window.matchMedia("(prefers-color-scheme: dark)").matches
+      ? "dark"
+      : "light";
+  }
+  return "light";
+}
+
 export default function App() {
   const [token, setToken] = useState(
     () =>
@@ -51,395 +59,275 @@ export default function App() {
       "",
   );
   const [tokenInput, setTokenInput] = useState("");
-  const [tokenVisible, setTokenVisible] = useState(false);
-  const [rememberLogin, setRememberLogin] = useState(
-    () => Boolean(localStorage.getItem(PERSIST_TOKEN_KEY)),
+  const [rememberLogin, setRememberLogin] = useState(() =>
+    Boolean(localStorage.getItem(PERSIST_TOKEN_KEY)),
   );
 
   const [role, setRole] = useState("");
   const [tokenName, setTokenName] = useState("");
-  const [keys, setKeys] = useState([]);
-  const [keyFolders, setKeyFolders] = useState({});
+
+  // secrets: [{ key, folder, id }]. Composite folder+key identity — key alone
+  // is not unique (backend UNIQUE(folder,key)).
+  const [secrets, setSecrets] = useState([]);
+  const [folders, setFolders] = useState([]);
+  const [secretCache, setSecretCache] = useState({}); // id -> value
+  const [secretMeta, setSecretMeta] = useState({}); // id -> { createdAt, folder }
 
   const [searchTerm, setSearchTerm] = useState("");
-  const [view, setView] = useState("dashboard");
-
-  const [secretCache, setSecretCache] = useState({});
-  const [secretMeta, setSecretMeta] = useState({});
+  const [folderFilter, setFolderFilter] = useState("All");
+  const [view, setView] = useState("vault");
 
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
 
-  const [drawerOpen, setDrawerOpen] = useState(false);
-  const [draft, setDraft] = useState(EMPTY_DRAFT);
+  const [addSingleOpen, setAddSingleOpen] = useState(false);
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState(null); // secret or null
 
-  const [deleteOpen, setDeleteOpen] = useState(false);
-  const [deleteTarget, setDeleteTarget] = useState("");
-
-  const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [defaultFolderName, setDefaultFolderName] = useState(
-    () => localStorage.getItem("sm_default_folder") || "Root",
-  );
-  const [folders, setFolders] = useState(() => {
-    const stored = localStorage.getItem("sm_folders");
-    const defaultFolder = localStorage.getItem("sm_default_folder") || "Root";
-    const nextFolders = stored
-      ? JSON.parse(stored)
-      : ["Root", "Production", "Staging", "Development"];
-    if (!Array.isArray(nextFolders) || nextFolders.length === 0)
-      return [defaultFolder];
-    if (!nextFolders.includes(defaultFolder))
-      return [defaultFolder, ...nextFolders];
-    return nextFolders;
-  });
-  const [newFolderName, setNewFolderName] = useState("");
-  const [defaultFolderDraft, setDefaultFolderDraft] = useState(
-    () => localStorage.getItem("sm_default_folder") || "Root",
+  const [theme, setTheme] = useState(initialTheme);
+  const [defaultFolder, setDefaultFolder] = useState(
+    () => localStorage.getItem(DEFAULT_FOLDER_KEY) || "Root",
   );
 
   const signedIn = useMemo(() => Boolean(token && role), [token, role]);
 
-  const filteredKeys = useMemo(() => {
-    const needle = searchTerm.trim().toLowerCase();
-    if (!needle) return keys;
-    return keys.filter((keyName) => keyName.toLowerCase().includes(needle));
-  }, [keys, searchTerm]);
+  // Apply + persist theme.
+  useEffect(() => {
+    const root = document.documentElement;
+    if (theme === "dark") root.classList.add("dark");
+    else root.classList.remove("dark");
+    localStorage.setItem(THEME_KEY, theme);
+  }, [theme]);
+
+  useEffect(() => {
+    localStorage.setItem(DEFAULT_FOLDER_KEY, defaultFolder);
+  }, [defaultFolder]);
 
   function resetState() {
     setRole("");
     setTokenName("");
-    setKeys([]);
-    setKeyFolders({});
-    setSearchTerm("");
-    setView("dashboard");
+    setSecrets([]);
+    setFolders([]);
     setSecretCache({});
     setSecretMeta({});
-    setDrawerOpen(false);
-    setDeleteOpen(false);
-    setDeleteTarget("");
+    setSearchTerm("");
+    setFolderFilter("All");
+    setView("vault");
+    setAddSingleOpen(false);
+    setBulkOpen(false);
+    setDeleteTarget(null);
   }
 
-  async function refreshSecrets(activeToken = token, notify = true) {
-    const payload = await listSecrets(activeToken);
-    const rawKeys = payload.keys || [];
+  const logout = useCallback((message) => {
+    clearStoredToken();
+    setToken("");
+    resetState();
+    if (message) toast(message, { icon: "!" });
+  }, []);
 
-    const nextKeys = rawKeys.map((item) =>
-      typeof item === "string" ? item : item.key,
-    );
-    const nextKeyFolders = {};
-    rawKeys.forEach((item) => {
-      if (typeof item === "string") {
-        nextKeyFolders[item] = defaultFolderName;
-      } else if (item && item.key) {
-        nextKeyFolders[item.key] = item.folder || defaultFolderName;
-      }
+  // api.js calls this once on any 401 — clear the token, no toast storm.
+  useEffect(() => {
+    setUnauthorizedHandler(() => {
+      clearStoredToken();
+      setToken("");
+      resetState();
     });
+    return () => setUnauthorizedHandler(null);
+  }, []);
 
-    setKeys(nextKeys);
-    setKeyFolders(nextKeyFolders);
+  const refreshSecrets = useCallback(
+    async (activeToken = token) => {
+      const [secretsPayload, foldersPayload] = await Promise.all([
+        listSecrets(activeToken),
+        getFolders(activeToken).catch(() => ({ folders: [] })),
+      ]);
 
-    if (notify) toast.success("Secrets refreshed");
-  }
+      const rawKeys = secretsPayload.keys || [];
+      const nextSecrets = rawKeys.map((item) => {
+        const key = typeof item === "string" ? item : item.key;
+        const folder =
+          typeof item === "string" ? "Root" : item.folder || "Root";
+        return { key, folder, id: secretId(folder, key) };
+      });
+      setSecrets(nextSecrets);
 
-  async function validateAndLoad(activeToken) {
-    const me = await getMe(activeToken);
-    setRole(me.role);
-    setTokenName(me.token_name);
-    await refreshSecrets(activeToken, false);
-  }
+      // Folders from the server; union with folders actually in use so nothing
+      // is orphaned in the chip bar.
+      const serverFolders = Array.isArray(foldersPayload.folders)
+        ? foldersPayload.folders
+        : [];
+      const used = nextSecrets.map((s) => s.folder);
+      setFolders([...new Set([...serverFolders, ...used])].sort());
+    },
+    [token],
+  );
+
+  const validateAndLoad = useCallback(
+    async (activeToken) => {
+      const me = await getMe(activeToken);
+      setRole(me.role);
+      setTokenName(me.token_name);
+      await refreshSecrets(activeToken);
+    },
+    [refreshSecrets],
+  );
 
   useEffect(() => {
     if (!token) {
       setLoading(false);
       resetState();
-      return;
+      return undefined;
     }
-
     let cancelled = false;
     setLoading(true);
-
     validateAndLoad(token)
-      .then(() => {
-        if (!cancelled) {
-          toast.success("Identity verified");
-        }
-      })
       .catch((error) => {
         if (cancelled) return;
-        clearStoredToken();
-        setToken("");
-        resetState();
-        toast.error(`Login required: ${error.message}`);
+        if (error.message !== "Unauthorized") {
+          toast.error(`Sign-in failed: ${error.message}`);
+        }
+        logout();
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
-
     return () => {
       cancelled = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
-  useEffect(() => {
-    localStorage.setItem("sm_folders", JSON.stringify(folders));
-  }, [folders]);
+  // Load a secret value by composite id; caches value + meta. Resolves the
+  // right folder's secret even when the same key exists elsewhere.
+  const loadSecret = useCallback(
+    async (id) => {
+      if (secretCache[id] !== undefined) return secretCache[id];
+      const secret = secrets.find((s) => s.id === id);
+      if (!secret) throw new Error("Secret not found");
+      const payload = await getSecret(token, secret.folder, secret.key);
+      setSecretCache((current) => ({ ...current, [id]: payload.value }));
+      setSecretMeta((current) => ({
+        ...current,
+        [id]: {
+          createdAt: payload.created_at,
+          folder: payload.folder || secret.folder,
+        },
+      }));
+      return payload.value;
+    },
+    [secretCache, secrets, token],
+  );
 
-  useEffect(() => {
-    localStorage.setItem("sm_default_folder", defaultFolderName);
-    setDefaultFolderDraft(defaultFolderName);
-  }, [defaultFolderName]);
+  const handleCopy = useCallback(
+    async (id) => {
+      setBusy(true);
+      try {
+        const value = await loadSecret(id);
+        if (!navigator.clipboard?.writeText) {
+          throw new Error("Clipboard unavailable in this browser");
+        }
+        await navigator.clipboard.writeText(value);
+        toast.success("Copied to clipboard");
+      } catch (error) {
+        if (error.message !== "Unauthorized")
+          toast.error(`Copy failed: ${error.message}`);
+      } finally {
+        setBusy(false);
+      }
+    },
+    [loadSecret],
+  );
 
-  useEffect(() => {
-    if (folders.includes(defaultFolderName)) return;
-    setFolders((current) => [
-      defaultFolderName,
-      ...current.filter((folder) => folder !== defaultFolderName),
-    ]);
-  }, [folders, defaultFolderName]);
-
-  async function loadSecret(keyName, notify = false) {
-    if (secretCache[keyName] !== undefined) {
-      if (notify) toast.success(`${keyName} loaded`);
-      return secretCache[keyName];
+  function handleLogin(event) {
+    event.preventDefault();
+    const next = tokenInput.trim();
+    if (!next) {
+      toast.error("Access token is required");
+      return;
     }
-
-    const folder = keyFolders[keyName] || defaultFolderName;
-    const payload = await getSecret(token, folder, keyName);
-    setSecretCache((current) => ({ ...current, [keyName]: payload.value }));
-    setSecretMeta((current) => ({
-      ...current,
-      [keyName]: {
-        createdAt: payload.created_at,
-        folder: payload.folder || defaultFolderName,
-      },
-    }));
-
-    if (notify) toast.success(`${keyName} loaded`);
-    return payload.value;
+    resetState();
+    storeToken(next, rememberLogin);
+    setToken(next);
+    setTokenInput("");
   }
 
-  async function handleCopy(keyName) {
-    if (!keyName) return;
-
+  async function handleAddSingle({ key, value, folder }) {
     setBusy(true);
     try {
-      const value = await loadSecret(keyName, false);
-      if (!navigator.clipboard?.writeText) {
-        throw new Error("Clipboard is unavailable in this browser");
-      }
-      await navigator.clipboard.writeText(value);
-      toast.success("Token copied to clipboard");
+      await createSecret(token, key, value, folder);
+      await refreshSecrets(token);
+      setAddSingleOpen(false);
+      toast.success(`Added ${key}`);
     } catch (error) {
-      toast.error(`Copy failed: ${error.message}`);
+      if (error.message !== "Unauthorized")
+        toast.error(`Save failed: ${error.message}`);
     } finally {
       setBusy(false);
     }
   }
 
-  async function handleRefresh() {
-    setLoading(true);
+  async function handleBulkCommit({ folder, secrets: rows, overwrite }) {
+    setBusy(true);
     try {
-      await refreshSecrets(token, true);
-    } catch (error) {
-      toast.error(`Refresh failed: ${error.message}`);
-    } finally {
-      setLoading(false);
-    }
-  }
+      const result = await bulkCreateSecrets(token, folder, rows, overwrite);
 
-  function handleLogout() {
-    clearStoredToken();
-    setToken("");
-    setTokenInput("");
-    resetState();
-    toast.success("Logged out");
-  }
-
-  function handleAddFolder() {
-    const folderName = newFolderName.trim();
-    if (!folderName) {
-      toast.error("Folder name is required");
-      return;
-    }
-    if (folders.includes(folderName)) {
-      toast.error("Folder already exists");
-      return;
-    }
-    setFolders((current) => [...current, folderName]);
-    setNewFolderName("");
-    toast.success(`Folder "${folderName}" created`);
-  }
-
-  function handleDeleteFolder(folderName) {
-    if (folderName === defaultFolderName) {
-      toast.error("Cannot delete the default folder");
-      return;
-    }
-    setFolders((current) => current.filter((f) => f !== folderName));
-    toast.success(`Folder "${folderName}" deleted`);
-  }
-
-  async function handleRenameDefaultFolder() {
-    const nextFolderName = defaultFolderDraft.trim();
-    if (!nextFolderName) {
-      toast.error("Default folder name is required");
-      return;
-    }
-    if (nextFolderName === defaultFolderName) {
-      toast("Default folder name unchanged", { icon: "i" });
-      return;
-    }
-    if (folders.includes(nextFolderName)) {
-      toast.error("A folder with this name already exists");
-      return;
-    }
-    if (role !== "write") {
-      toast.error("Write token required to rename the default folder");
-      return;
-    }
-
-    setLoading(true);
-    try {
-      const payload = await renameFolder(token, defaultFolderName, nextFolderName);
-
-      setFolders((current) =>
-        current.map((folder) =>
-          folder === defaultFolderName ? nextFolderName : folder,
-        ),
+      // Overwritten (and newly added) keys keep the same composite id, so their
+      // stale plaintext would survive in the caches and be revealed/copied next
+      // time. Evict them the same way confirmDelete does.
+      const evictIds = [...(result.updated || []), ...(result.added || [])].map(
+        (k) => secretId(folder, k),
       );
-      setDefaultFolderName(nextFolderName);
-      setDraft((current) => ({
-        ...current,
-        folder:
-          current.folder === defaultFolderName
-            ? nextFolderName
-            : current.folder,
-      }));
+      if (evictIds.length > 0) {
+        setSecretCache((current) => {
+          const next = { ...current };
+          evictIds.forEach((id) => delete next[id]);
+          return next;
+        });
+        setSecretMeta((current) => {
+          const next = { ...current };
+          evictIds.forEach((id) => delete next[id]);
+          return next;
+        });
+      }
 
-      await refreshSecrets(token, false);
+      await refreshSecrets(token);
+      setBulkOpen(false);
+      const added = result.added?.length ?? 0;
+      const updated = result.updated?.length ?? 0;
+      const skipped = result.skipped?.length ?? 0;
+      const invalid = result.invalid?.length ?? 0;
       toast.success(
-        `Default folder renamed to "${nextFolderName}" (${payload.renamed || 0} secrets updated)`,
+        `Added ${added} · updated ${updated} · skipped ${skipped} · invalid ${invalid}`,
       );
     } catch (error) {
-      toast.error(`Rename failed: ${error.message}`);
+      if (error.message !== "Unauthorized")
+        toast.error(`Bulk add failed: ${error.message}`);
     } finally {
-      setLoading(false);
+      setBusy(false);
     }
-  }
-
-  function handleLogin(event) {
-    event.preventDefault();
-    const nextToken = tokenInput.trim();
-
-    if (!nextToken) {
-      toast.error("Security token is required");
-      return;
-    }
-
-    setLoading(true);
-    resetState();
-    storeToken(nextToken, rememberLogin);
-    setToken(nextToken);
-    setTokenInput("");
-    toast("Verifying identity...", { icon: "i" });
-  }
-
-  function openCreateDrawer() {
-    if (role !== "write") {
-      toast.error("Write token required to create secrets");
-      return;
-    }
-    setDraft({ ...EMPTY_DRAFT, folder: defaultFolderName });
-    setDrawerOpen(true);
-  }
-
-  async function handleDrawerSubmit(event) {
-    event.preventDefault();
-
-    if (role !== "write") {
-      toast.error("Write token required");
-      return;
-    }
-
-    const keyName = draft.key.trim();
-    if (!keyName || !draft.value) {
-      toast.error("Name and secret value are required");
-      return;
-    }
-    if (keys.includes(keyName)) {
-      toast.error("Secret name already exists. Create-only mode is enabled.");
-      return;
-    }
-
-    setLoading(true);
-    try {
-      await createSecret(
-        token,
-        keyName,
-        draft.value,
-        draft.folder || defaultFolderName,
-      );
-
-      setSecretCache((current) => ({ ...current, [keyName]: draft.value }));
-      setSecretMeta((current) => ({
-        ...current,
-        [keyName]: {
-          createdAt: new Date().toISOString(),
-          folder: draft.folder || defaultFolderName,
-        },
-      }));
-      setKeyFolders((current) => ({
-        ...current,
-        [keyName]: draft.folder || defaultFolderName,
-      }));
-
-      await refreshSecrets(token, false);
-      setDrawerOpen(false);
-      setView("dashboard");
-      setDraft({ ...EMPTY_DRAFT, folder: defaultFolderName });
-
-      toast.success(`Created ${keyName}`);
-    } catch (error) {
-      toast.error(`Save failed: ${error.message}`);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  function requestDelete(keyName) {
-    if (role !== "write") {
-      toast.error("Write token required to delete secrets");
-      return;
-    }
-    setDeleteTarget(keyName);
-    setDeleteOpen(true);
   }
 
   async function confirmDelete() {
     if (!deleteTarget) return;
-
     setBusy(true);
     try {
-      const folder = keyFolders[deleteTarget] || defaultFolderName;
-      await deleteSecret(token, folder, deleteTarget);
-
+      await deleteSecret(token, deleteTarget.folder, deleteTarget.key);
       setSecretCache((current) => {
         const next = { ...current };
-        delete next[deleteTarget];
+        delete next[deleteTarget.id];
         return next;
       });
       setSecretMeta((current) => {
         const next = { ...current };
-        delete next[deleteTarget];
+        delete next[deleteTarget.id];
         return next;
       });
-
-      await refreshSecrets(token, false);
-      setDeleteOpen(false);
-      setDeleteTarget("");
-      toast.success("Credential deleted");
+      await refreshSecrets(token);
+      setDeleteTarget(null);
+      toast.success("Deleted");
     } catch (error) {
-      toast.error(`Delete failed: ${error.message}`);
+      if (error.message !== "Unauthorized")
+        toast.error(`Delete failed: ${error.message}`);
     } finally {
       setBusy(false);
     }
@@ -451,8 +339,6 @@ export default function App() {
         <Login
           tokenInput={tokenInput}
           setTokenInput={setTokenInput}
-          tokenVisible={tokenVisible}
-          setTokenVisible={setTokenVisible}
           rememberLogin={rememberLogin}
           setRememberLogin={setRememberLogin}
           onSubmit={handleLogin}
@@ -467,102 +353,83 @@ export default function App() {
   }
 
   return (
-    <div className="flex h-screen bg-slate-50 overflow-hidden">
-      <Sidebar
-        activeView={view}
-        onViewChange={(newView) => {
-          setView(newView);
-          setSidebarOpen(false);
-        }}
-        onLogout={handleLogout}
+    <div className="min-h-screen bg-paper">
+      <TopBar
+        view={view}
+        onViewChange={setView}
+        searchTerm={searchTerm}
+        onSearchChange={setSearchTerm}
         role={role}
-        isOpen={sidebarOpen}
-        onClose={() => setSidebarOpen(false)}
+        theme={theme}
+        onToggleTheme={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
+        onAddSingle={() => setAddSingleOpen(true)}
+        onAddBulk={() => setBulkOpen(true)}
       />
 
-      <div className="flex-1 flex flex-col overflow-hidden w-full lg:w-auto">
-        <main className="flex-1 overflow-y-auto p-4 sm:p-6">
-          {view === "dashboard" && (
-            <Dashboard
-              keys={keys}
-              folders={folders}
-              filteredKeys={filteredKeys}
-              keyFolders={keyFolders}
-              defaultFolderName={defaultFolderName}
-              secretCache={secretCache}
-              secretMeta={secretMeta}
-              role={role}
-              busy={busy}
-              authToken={token}
-              onCopy={handleCopy}
-              onDelete={requestDelete}
-              onCreateSecret={openCreateDrawer}
-              searchTerm={searchTerm}
-              onSearchChange={setSearchTerm}
-              onRefresh={handleRefresh}
-              loading={loading}
-              onMenuClick={() => setSidebarOpen(true)}
-            />
-          )}
-          {view === "secrets" && (
-            <Secrets
-              keys={keys}
-              keyFolders={keyFolders}
-              folders={folders}
-              filteredKeys={filteredKeys}
-              defaultFolderName={defaultFolderName}
-              defaultFolderDraft={defaultFolderDraft}
-              setDefaultFolderDraft={setDefaultFolderDraft}
-              newFolderName={newFolderName}
-              setNewFolderName={setNewFolderName}
-              secretCache={secretCache}
-              secretMeta={secretMeta}
-              role={role}
-              busy={busy}
-              loading={loading}
-              authToken={token}
-              onCopy={handleCopy}
-              onDelete={requestDelete}
-              onRenameDefaultFolder={handleRenameDefaultFolder}
-              onAddFolder={handleAddFolder}
-              onDeleteFolder={handleDeleteFolder}
-              onMenuClick={() => setSidebarOpen(true)}
-            />
-          )}
-          {view === "audit" && (
-            <AuditLogs
-              token={token}
-              onMenuClick={() => setSidebarOpen(true)}
-            />
-          )}
-          {view === "settings" && (
-            <Settings
-              tokenName={tokenName}
-              role={role}
-              token={token}
-              onLogout={handleLogout}
-              onMenuClick={() => setSidebarOpen(true)}
-            />
-          )}
-        </main>
-      </div>
+      <main className="mx-auto max-w-6xl px-4 py-5">
+        {view === "vault" && (
+          <Vault
+            secrets={secrets}
+            folders={folders}
+            meta={secretMeta}
+            role={role}
+            busy={busy}
+            searchTerm={searchTerm}
+            folderFilter={folderFilter}
+            onFolderFilter={setFolderFilter}
+            onCopy={handleCopy}
+            onDelete={setDeleteTarget}
+            loadSecret={loadSecret}
+          />
+        )}
+        {view === "audit" && <AuditList token={token} />}
+        {view === "settings" && (
+          <Settings
+            tokenName={tokenName}
+            role={role}
+            token={token}
+            folders={folders}
+            defaultFolder={defaultFolder}
+            onDefaultFolderChange={setDefaultFolder}
+            onLogout={() => logout("Signed out")}
+          />
+        )}
+      </main>
 
-      <CreateDrawer
-        open={drawerOpen}
-        draft={draft}
-        onDraftChange={(partial) => setDraft((current) => ({ ...current, ...partial }))}
-        folders={folders}
-        loading={loading}
-        onSubmit={handleDrawerSubmit}
-        onClose={() => setDrawerOpen(false)}
-      />
+      {role === "write" && (
+        <>
+          <AddSingleDialog
+            open={addSingleOpen}
+            folders={folders}
+            defaultFolder={defaultFolder}
+            busy={busy}
+            onSubmit={handleAddSingle}
+            onClose={() => setAddSingleOpen(false)}
+          />
+          <BulkAddSheet
+            open={bulkOpen}
+            folders={folders}
+            defaultFolder={defaultFolder}
+            secrets={secrets}
+            busy={busy}
+            onCommit={handleBulkCommit}
+            onClose={() => setBulkOpen(false)}
+          />
+        </>
+      )}
 
-      <DeleteDialog
-        open={deleteOpen}
-        target={deleteTarget}
+      <ConfirmDialog
+        open={Boolean(deleteTarget)}
+        title="Delete secret?"
+        body="This permanently removes the secret from the vault."
+        mono={
+          deleteTarget ? `${deleteTarget.folder} / ${deleteTarget.key}` : ""
+        }
+        confirmLabel="Delete"
+        danger
         busy={busy}
         onConfirm={confirmDelete}
-        onClose={() => setDeleteOpen(false)}
+        onClose={() => setDeleteTarget(null)}
       />
 
       <Toaster
