@@ -161,6 +161,136 @@ describe("App bulk-commit summary", () => {
   });
 });
 
+// Reveal a value, run a bulk commit, then mask + reveal again — exercising the
+// cache-eviction path in handleBulkCommit (updated/added keys must be re-fetched).
+async function revealStagingKey(user) {
+  await user.click(screen.getByLabelText("Reveal API_KEY in Staging"));
+}
+
+async function commitBulkTo(user, folder, response) {
+  api.bulkCreateSecrets.mockResolvedValue(response);
+  await user.click(screen.getByLabelText("Add options"));
+  await user.click(await screen.findByText("Paste .env"));
+  const folderInput = await screen.findByDisplayValue("Root");
+  fireEvent.change(folderInput, { target: { value: folder } });
+  const textarea = await screen.findByPlaceholderText(/paste your \.env/i);
+  // NEWKEY collides with nothing, so it is addable and the commit is enabled.
+  fireEvent.change(textarea, { target: { value: "NEWKEY=1" } });
+  await user.click(
+    screen.getByRole("button", {
+      name: new RegExp(`Add 1 secret . ${folder}`),
+    }),
+  );
+  await waitFor(() => expect(api.bulkCreateSecrets).toHaveBeenCalled());
+  // Sheet closes on success — wait for it before touching the vault behind it.
+  await waitFor(() => expect(screen.queryByText("Paste .env")).toBeNull());
+}
+
+describe("App reveal cache eviction on bulk commit", () => {
+  it("re-fetches an updated key on the next reveal (no stale value)", async () => {
+    const user = userEvent.setup();
+    api.getSecret
+      .mockResolvedValueOnce({
+        value: "old",
+        created_at: null,
+        folder: "Staging",
+      })
+      .mockResolvedValueOnce({
+        value: "new",
+        created_at: null,
+        folder: "Staging",
+      });
+
+    render(<App />);
+    await screen.findAllByText("API_KEY");
+
+    await revealStagingKey(user);
+    expect(await screen.findByText("old")).toBeInTheDocument();
+    expect(api.getSecret).toHaveBeenCalledTimes(1);
+
+    await commitBulkTo(user, "Staging", {
+      added: [],
+      updated: ["API_KEY"],
+      skipped: [],
+      invalid: [],
+    });
+
+    await user.click(screen.getByLabelText("Mask API_KEY in Staging"));
+    await revealStagingKey(user);
+
+    expect(await screen.findByText("new")).toBeInTheDocument();
+    expect(screen.queryByText("old")).toBeNull();
+    // Cache was evicted, so the second reveal hit the network again.
+    expect(api.getSecret).toHaveBeenCalledTimes(2);
+    expect(api.getSecret).toHaveBeenLastCalledWith("tok", "Staging", "API_KEY");
+  });
+
+  it("re-fetches an added key on the next reveal", async () => {
+    const user = userEvent.setup();
+    api.getSecret
+      .mockResolvedValueOnce({
+        value: "old",
+        created_at: null,
+        folder: "Staging",
+      })
+      .mockResolvedValueOnce({
+        value: "new",
+        created_at: null,
+        folder: "Staging",
+      });
+
+    render(<App />);
+    await screen.findAllByText("API_KEY");
+
+    await revealStagingKey(user);
+    expect(await screen.findByText("old")).toBeInTheDocument();
+
+    await commitBulkTo(user, "Staging", {
+      added: ["API_KEY"],
+      updated: [],
+      skipped: [],
+      invalid: [],
+    });
+
+    await user.click(screen.getByLabelText("Mask API_KEY in Staging"));
+    await revealStagingKey(user);
+
+    expect(await screen.findByText("new")).toBeInTheDocument();
+    expect(api.getSecret).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not re-fetch an untouched revealed key when nothing changed", async () => {
+    const user = userEvent.setup();
+    api.getSecret.mockResolvedValue({
+      value: "old",
+      created_at: null,
+      folder: "Staging",
+    });
+
+    render(<App />);
+    await screen.findAllByText("API_KEY");
+
+    await revealStagingKey(user);
+    expect(await screen.findByText("old")).toBeInTheDocument();
+    expect(api.getSecret).toHaveBeenCalledTimes(1);
+
+    // Empty updated + added → no eviction of the revealed key.
+    await commitBulkTo(user, "Staging", {
+      added: [],
+      updated: [],
+      skipped: [],
+      invalid: [],
+    });
+
+    await user.click(screen.getByLabelText("Mask API_KEY in Staging"));
+    await revealStagingKey(user);
+
+    // Served from cache — still "old", getSecret not called a second time.
+    expect(await screen.findByText("old")).toBeInTheDocument();
+    expect(api.getSecret).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("App folder union", () => {
   it("unions server folders with folders actually in use", async () => {
     api.getFolders.mockResolvedValue({ folders: ["ServerOnly"] });

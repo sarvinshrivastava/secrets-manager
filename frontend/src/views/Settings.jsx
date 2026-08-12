@@ -23,6 +23,18 @@ function tokenStatus(t) {
   return "active";
 }
 
+// Render a token's scope for display. The server returns "*" (or an array
+// containing "*", or an empty/absent scope) for an all-folders token, otherwise
+// an array of folder names.
+function formatScope(scope, allLabel = "all folders") {
+  if (!scope || scope === "*") return allLabel;
+  if (Array.isArray(scope)) {
+    if (scope.length === 0 || scope.includes("*")) return allLabel;
+    return scope.join(", ");
+  }
+  return String(scope);
+}
+
 const STATUS_STYLE = {
   active: "border-ok text-ok",
   expired: "border-warn text-warn",
@@ -53,7 +65,7 @@ function Section({ title, children }) {
 
 // Full-value reveal modal (shown once after create/rotate — value is never
 // retrievable again).
-function TokenValueModal({ open, label, value, onClose }) {
+function TokenValueModal({ open, label, value, scope, onClose }) {
   if (!open) return null;
   async function copy() {
     try {
@@ -97,6 +109,11 @@ function TokenValueModal({ open, label, value, onClose }) {
               <MdContentCopy size={15} />
             </button>
           </div>
+          {scope !== undefined && (
+            <p className="font-mono text-xs text-muted">
+              Scope: <span className="text-ink">{formatScope(scope)}</span>
+            </p>
+          )}
         </div>
         <div className="flex justify-end border-t border-line px-4 py-3">
           <button className="sm-btn-accent" onClick={onClose}>
@@ -181,6 +198,7 @@ export default function Settings({
       setRevealed({
         label: `Token "${payload.name}" created`,
         value: payload.token,
+        scope: payload.scope,
       });
       setNewName("");
       setNewRole("read");
@@ -249,6 +267,7 @@ export default function Settings({
         open={Boolean(revealed)}
         label={revealed?.label || ""}
         value={revealed?.value || ""}
+        scope={revealed?.scope}
         onClose={() => setRevealed(null)}
       />
 
@@ -394,21 +413,23 @@ export default function Settings({
             <table className="w-full border-collapse">
               <thead>
                 <tr className="border-b border-line-strong bg-paper text-left">
-                  {["Name", "Role", "Expires", "Status", ""].map((h, i) => (
-                    <th
-                      key={h || i}
-                      className="px-3 py-2 font-mono text-xs font-semibold uppercase tracking-wide text-faint"
-                    >
-                      {h}
-                    </th>
-                  ))}
+                  {["Name", "Role", "Scope", "Expires", "Status", ""].map(
+                    (h, i) => (
+                      <th
+                        key={h || i}
+                        className="px-3 py-2 font-mono text-xs font-semibold uppercase tracking-wide text-faint"
+                      >
+                        {h}
+                      </th>
+                    ),
+                  )}
                 </tr>
               </thead>
               <tbody>
                 {tokens.length === 0 ? (
                   <tr>
                     <td
-                      colSpan={5}
+                      colSpan={6}
                       className="px-3 py-6 text-center font-mono text-sm text-muted"
                     >
                       {tokensLoading ? "Loading…" : "No tokens."}
@@ -428,6 +449,9 @@ export default function Settings({
                         </td>
                         <td className="px-3 py-2 font-mono text-sm text-muted">
                           {t.role}
+                        </td>
+                        <td className="px-3 py-2 font-mono text-xs text-muted">
+                          {formatScope(t.scope, "all")}
                         </td>
                         <td className="px-3 py-2 font-mono text-xs text-muted">
                           {t.expires_at
