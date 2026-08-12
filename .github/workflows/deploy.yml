@@ -110,11 +110,10 @@ jobs:
               exit 1
             }
 
-            # ---- 3. Backup, FAIL CLOSED ----------------------------------
-            # This is a stateful vault whose SQLite DB is the only copy of every
-            # CI secret and token hash. Deploying it with no fresh backup is the
-            # exact risk this gate exists for — so a failed backup aborts BEFORE
-            # anything is touched, rather than after.
+            # ---- 3. Backup pre-flight ------------------------------------
+            # Only the checks that do NOT depend on the checkout run here, so a
+            # missing tool still aborts before anything changes. The backup
+            # ITSELF runs after checkout — see section 4b for why.
             if [ "$SKIP_BACKUP" = "true" ]; then
               echo "!!! WARNING: backup SKIPPED by operator request (skip_backup=true)."
               echo "!!! There is no fresh restore point for this deploy."
@@ -126,35 +125,6 @@ jobs:
                      "you accept deploying with no restore point."
                 exit 1
               }
-              [ -f scripts/backup.sh ] || {
-                echo "FATAL: scripts/backup.sh missing from the current checkout." \
-                     "Cannot back up. Re-run with skip_backup=true only if you" \
-                     "accept deploying with no restore point."
-                exit 1
-              }
-
-              if [ -f "$APP_DIR/data/secrets.db" ]; then
-                echo "==> backing up $APP_DIR/data/secrets.db"
-                # backup.sh reads DB_PATH / BACKUP_DIR / KEEP from env, uses
-                # sqlite3 ".backup" (WAL-safe, no downtime) and runs
-                # PRAGMA integrity_check on the snapshot before keeping it.
-                # It needs bash (mapfile), so invoke it explicitly with bash.
-                DB_PATH="$APP_DIR/data/secrets.db" \
-                BACKUP_DIR=/var/backups/secret-manager \
-                KEEP=14 \
-                  bash scripts/backup.sh || {
-                    echo "FATAL: backup failed — ABORTING before any change." \
-                         "The running service is untouched. Investigate the" \
-                         "error above (disk full? integrity_check failure?)."
-                    exit 1
-                  }
-                echo "==> backup ok"
-              else
-                # No DB file = no data to lose (fresh box / first deploy). The
-                # guard's purpose is already satisfied, so continue loudly.
-                echo "!!! NOTE: no DB at $APP_DIR/data/secrets.db — treating as a" \
-                     "first deploy with no data to back up."
-              fi
             fi
 
             # ---- 4. Fetch and check out the requested ref -----------------
@@ -178,6 +148,46 @@ jobs:
             git checkout -f "$TARGET"
             NEW="$(git rev-parse HEAD)"
             echo "==> new sha: $NEW"
+
+            # ---- 4b. Backup, FAIL CLOSED (must run AFTER checkout) -------
+            # This runs AFTER checkout on purpose: scripts/backup.sh ships WITH
+            # the code, so on the first deploy onto an older checkout it does
+            # not exist yet — gating on it beforehand made a first deploy
+            # impossible without skip_backup. Checking out is safe to do first:
+            # `.env` and `data/` are gitignored so neither is touched, and the
+            # container has NOT been restarted yet, so the live DB is still
+            # exactly as found. If the backup fails we put the tree back on
+            # $PREV and abort, leaving the box byte-for-byte as we found it.
+            if [ "$SKIP_BACKUP" != "true" ]; then
+              if [ ! -f "$APP_DIR/data/secrets.db" ]; then
+                # No DB = no data to lose (fresh box). Guard already satisfied.
+                echo "!!! NOTE: no DB at $APP_DIR/data/secrets.db — treating as a" \
+                     "first deploy with no data to back up."
+              else
+                abort_restoring_tree() {
+                  echo "FATAL: $1"
+                  echo "==> restoring working tree to $PREV (container never restarted," \
+                       "live service and DB untouched)"
+                  git checkout -f "$PREV" || echo "!!! could not restore tree to $PREV"
+                  exit 1
+                }
+
+                [ -f scripts/backup.sh ] || abort_restoring_tree \
+                  "scripts/backup.sh missing even at $TARGET — cannot back up."
+
+                echo "==> backing up $APP_DIR/data/secrets.db"
+                # backup.sh reads DB_PATH / BACKUP_DIR / KEEP from env, uses
+                # sqlite3 ".backup" (WAL-safe, no downtime) and runs
+                # PRAGMA integrity_check on the snapshot before keeping it.
+                # It needs bash (mapfile), so invoke it explicitly with bash.
+                DB_PATH="$APP_DIR/data/secrets.db" \
+                BACKUP_DIR=/var/backups/secret-manager \
+                KEEP=14 \
+                  bash scripts/backup.sh || abort_restoring_tree \
+                    "backup failed (disk full? integrity_check failure?)."
+                echo "==> backup ok"
+              fi
+            fi
 
             # ---- helpers used by the gates and the rollback ---------------
             http_code() {
