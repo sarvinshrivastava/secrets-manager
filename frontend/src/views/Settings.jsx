@@ -25,14 +25,20 @@ function tokenStatus(t) {
 
 // Render a token's scope for display. The server returns "*" (or an array
 // containing "*", or an empty/absent scope) for an all-folders token, otherwise
-// an array of folder names.
+// a CSV string of folder names ("A,B") — an array of names is also accepted.
 function formatScope(scope, allLabel = "all folders") {
   if (!scope || scope === "*") return allLabel;
-  if (Array.isArray(scope)) {
-    if (scope.length === 0 || scope.includes("*")) return allLabel;
-    return scope.join(", ");
-  }
-  return String(scope);
+  // The server stores a folder scope as a CSV string ("A,B"); some callers pass
+  // an array. Normalise both to a list of folder names.
+  const names = Array.isArray(scope)
+    ? scope
+    : String(scope)
+        .split(",")
+        .map((name) => name.trim())
+        .filter(Boolean);
+  return names.length === 0 || names.includes("*")
+    ? allLabel
+    : names.join(", ");
 }
 
 const STATUS_STYLE = {
@@ -144,7 +150,7 @@ export default function Settings({
   const [scopeAll, setScopeAll] = useState(true);
   const [scopeFolders, setScopeFolders] = useState(() => new Set());
   const [creating, setCreating] = useState(false);
-  const [revealed, setRevealed] = useState(null); // { label, value }
+  const [revealed, setRevealed] = useState(null); // { label, value, scope? }
 
   function toggleScopeFolder(name) {
     setScopeFolders((current) => {

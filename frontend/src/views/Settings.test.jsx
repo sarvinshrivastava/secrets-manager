@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 // Mock the API client. createToken is the one under test; listTokens resolves
@@ -135,5 +135,83 @@ describe("Settings create-token scope wiring", () => {
     );
     // Form not reset — the typed name survives so the operator can retry.
     expect(nameInput).toHaveValue("ci-reader");
+  });
+});
+
+// The scope a token actually got is the operator's read on its blast radius, so
+// the rendered output — not just the createToken args — needs coverage.
+describe("Settings token-table scope display", () => {
+  async function scopeCellFor(name) {
+    const nameCell = await screen.findByRole("cell", { name });
+    return nameCell.closest("tr");
+  }
+
+  it("renders the all-folders label for `*` and a spaced list for a CSV scope", async () => {
+    api.listTokens.mockResolvedValue({
+      tokens: [
+        { name: "admin", role: "write", scope: "*", expires_at: null },
+        { name: "svc", role: "read", scope: "A,B", expires_at: null },
+      ],
+    });
+    renderSettings();
+    await settleMount();
+
+    // Table column uses the short "all" label (formatScope's allLabel override).
+    expect(within(await scopeCellFor("admin")).getByText("all")).toBeVisible();
+    expect(within(await scopeCellFor("svc")).getByText("A, B")).toBeVisible();
+  });
+
+  it("renders the all-folders label for array-form empty and ['*'] scopes", async () => {
+    api.listTokens.mockResolvedValue({
+      tokens: [
+        { name: "empty-array", role: "read", scope: [], expires_at: null },
+        { name: "star-array", role: "read", scope: ["*"], expires_at: null },
+      ],
+    });
+    renderSettings();
+    await settleMount();
+
+    expect(
+      within(await scopeCellFor("empty-array")).getByText("all"),
+    ).toBeVisible();
+    expect(
+      within(await scopeCellFor("star-array")).getByText("all"),
+    ).toBeVisible();
+  });
+});
+
+describe("Settings create-result modal scope display", () => {
+  async function createNamed(name) {
+    const user = userEvent.setup();
+    renderSettings();
+    await settleMount();
+    await user.type(screen.getByPlaceholderText("name e.g. ci-reader"), name);
+    await user.click(screen.getByRole("button", { name: "Create token" }));
+    return user;
+  }
+
+  it("shows the all-folders label when the server grants `*`", async () => {
+    api.createToken.mockResolvedValue({
+      name: "ci-reader",
+      token: "sm_secret_value",
+      scope: "*",
+    });
+    await createNamed("ci-reader");
+
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveTextContent('Token "ci-reader" created');
+    expect(dialog).toHaveTextContent("Scope: all folders");
+  });
+
+  it("shows the granted folder list when the server grants a subset", async () => {
+    api.createToken.mockResolvedValue({
+      name: "scoped",
+      token: "sm_secret_value",
+      scope: ["Root", "ServiceA"],
+    });
+    await createNamed("scoped");
+
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveTextContent("Scope: Root, ServiceA");
   });
 });
