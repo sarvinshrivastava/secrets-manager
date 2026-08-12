@@ -118,6 +118,33 @@ describe("POST /api/tokens — scoping subset model", () => {
     expect(res.body.scope).toBe("A,B");
   });
 
+  it("a scoped caller may grant a multi-folder subset (201)", async () => {
+    const scoped = addToken(ctx.db, {
+      name: "team",
+      role: "write",
+      scope: "A,B,C",
+    });
+    const res = await request(ctx.app)
+      .post("/api/tokens")
+      .set(bearer(scoped))
+      .send({ name: "svc", role: "read", scope: ["A", "B"] });
+    expect(res.status).toBe(201);
+    expect(res.body.scope).toBe("A,B");
+  });
+
+  it("a scoped caller cannot grant a partly out-of-scope set (403)", async () => {
+    const scoped = addToken(ctx.db, {
+      name: "team",
+      role: "write",
+      scope: "A,B",
+    });
+    const res = await request(ctx.app)
+      .post("/api/tokens")
+      .set(bearer(scoped))
+      .send({ name: "svc", role: "read", scope: ["A", "C"] });
+    expect(res.status).toBe(403);
+  });
+
   it("a scoped caller may grant a subset (201)", async () => {
     const scoped = addToken(ctx.db, {
       name: "team",
@@ -242,6 +269,30 @@ describe("rotate / revoke — target scope model", () => {
       .set(bearer(scoped));
     expect(res.status).toBe(200);
   });
+
+  it("a scoped caller can revoke an in-scope token (200)", async () => {
+    const scoped = addToken(ctx.db, {
+      name: "team",
+      role: "write",
+      scope: "A,B",
+    });
+    // A 2nd in-scope write token so the last-write guard does not trip on revoke.
+    addToken(ctx.db, { name: "svc", role: "write", scope: "A" });
+    const res = await request(ctx.app)
+      .delete("/api/tokens/svc")
+      .set(bearer(scoped));
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("revoked");
+  });
+
+  it("admin can revoke a scoped token (200)", async () => {
+    addToken(ctx.db, { name: "svc", role: "write", scope: "A" });
+    const res = await request(ctx.app)
+      .delete("/api/tokens/svc")
+      .set(bearer(write));
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("revoked");
+  });
 });
 
 describe("GET /api/tokens — scope-filtered list", () => {
@@ -265,6 +316,23 @@ describe("GET /api/tokens — scope-filtered list", () => {
     const names = res.body.tokens.map((t) => t.name).sort();
     // Sees itself + the A-scoped token; NOT admin (`*`) nor the B-scoped token.
     expect(names).toEqual(["a-svc", "team"]);
+  });
+
+  it("an A,B caller sees A/B/A,B subsets and self, never C or `*`", async () => {
+    const scoped = addToken(ctx.db, {
+      name: "team",
+      role: "write",
+      scope: "A,B",
+    });
+    addToken(ctx.db, { name: "tok-a", role: "read", scope: "A" });
+    addToken(ctx.db, { name: "tok-b", role: "read", scope: "B" });
+    addToken(ctx.db, { name: "tok-c", role: "read", scope: "C" });
+    addToken(ctx.db, { name: "tok-ab", role: "read", scope: "A,B" });
+    addToken(ctx.db, { name: "tok-star", role: "read", scope: "*" });
+    const res = await request(ctx.app).get("/api/tokens").set(bearer(scoped));
+    const names = res.body.tokens.map((t) => t.name).sort();
+    // admin (`*`) from beforeEach and tok-star/tok-c are all excluded.
+    expect(names).toEqual(["team", "tok-a", "tok-ab", "tok-b"]);
   });
 });
 

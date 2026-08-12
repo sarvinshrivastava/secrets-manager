@@ -275,12 +275,25 @@ describe("audit log gating", () => {
     expect(res.status).toBe(403);
   });
 
-  it("write token may read audit logs", async () => {
+  it("unscoped `*` admin write token may read audit logs (200)", async () => {
     const res = await request(ctx.app)
       .get("/api/audit-logs")
       .set(bearer(write));
     expect(res.status).toBe(200);
     expect(Array.isArray(res.body.events)).toBe(true);
+  });
+
+  it("folder-scoped write token is forbidden (403 admin-only)", async () => {
+    const scoped = addToken(ctx.db, {
+      name: "team",
+      role: "write",
+      scope: "A,B",
+    });
+    const res = await request(ctx.app)
+      .get("/api/audit-logs")
+      .set(bearer(scoped));
+    expect(res.status).toBe(403);
+    expect(res.body.detail).toBe("Admin token required");
   });
 });
 
@@ -407,6 +420,19 @@ describe("bulk caps and rollback", () => {
       .set(bearer(write))
       .send({ folder: "Root", secrets });
     expect(res.status).toBe(400);
+  });
+
+  it("accepts exactly MAX_BULK_ENTRIES (500) valid entries → 207", async () => {
+    const secrets = [];
+    for (let i = 0; i < 500; i += 1) {
+      secrets.push({ key: `OK_${i}`, value: "v" });
+    }
+    const res = await request(ctx.app)
+      .post("/api/secrets/bulk")
+      .set(bearer(write))
+      .send({ folder: "Root", secrets });
+    expect(res.status).toBe(207);
+    expect(res.body.added).toHaveLength(500);
   });
 
   it("flags an oversized value as invalid (byte count, not char length)", async () => {

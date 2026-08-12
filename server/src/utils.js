@@ -104,6 +104,23 @@ export function parseNamedToken(token) {
   return { name, secret };
 }
 
+// A bootstrap token (SECRET_MANAGER_ADMIN_TOKEN / SECRET_MANAGER_READ_TOKEN) is
+// authenticated via the bare capped-scan path, which is NEVER reached for a
+// token containing a `.` — auth parses any dotted wire token as `<name>.<secret>`
+// and looks it up by name. A dotted bootstrap token therefore authenticates
+// against nothing (every request 401s) while /healthz stays 200 — a silent
+// brick. Fail loudly at boot instead. No-ops for an unset (null/undefined) token.
+export function assertBootstrapTokenFormat(token, envName) {
+  if (typeof token === "string" && token.includes(".")) {
+    throw new Error(
+      `FATAL: ${envName} contains a '.', which is reserved for the ` +
+        "<name>.<secret> token wire format. A dotted bootstrap token is parsed " +
+        "as a named token and never authenticates, bricking the vault. Set a " +
+        "bootstrap token with no '.' character.",
+    );
+  }
+}
+
 // Scope is stored as CSV of folder names, or `*` = all folders.
 export function scopeAllowsFolder(scopeCsv, folder) {
   if (!scopeCsv || scopeCsv === "*") return true;

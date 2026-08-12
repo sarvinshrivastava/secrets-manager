@@ -3,9 +3,14 @@ import { Router } from "express";
 export function createAuditRouter(db, { requireAuth, requireWriteAccess }) {
   const router = Router();
 
-  // Audit logs leak every key name, token name, and client IP — restrict to
-  // write tokens (admins), never plain read tokens.
+  // Audit logs leak every key name, token name, and client IP ACROSS ALL scopes
+  // — restrict to UNSCOPED admins (`*`). A folder-scoped write token must never
+  // read the global audit log.
   router.get("/", requireAuth, requireWriteAccess, (req, res) => {
+    if (req.auth.scope !== "*") {
+      return res.status(403).json({ detail: "Admin token required" });
+    }
+
     const action =
       typeof req.query.action === "string" && req.query.action.trim()
         ? req.query.action.trim()

@@ -4,6 +4,7 @@ import { CryptoManager } from "./crypto.js";
 import { Database } from "./database.js";
 import { RateLimiter } from "./rate-limit.js";
 import { createApp } from "./app.js";
+import { assertBootstrapTokenFormat } from "./utils.js";
 
 // ── PBKDF2 master key migration ────────────────────────────────────────────
 // Re-encrypt any secrets still under the old SHA256-derived key. Iterates
@@ -58,6 +59,19 @@ export function migrateEncryptionIfNeeded(db, crypto) {
 // ── Boot ────────────────────────────────────────────────────────────────────
 function main() {
   const settings = loadSettings();
+
+  // Reject dotted bootstrap tokens before touching the DB — a '.' in a bootstrap
+  // token silently bricks the vault (see assertBootstrapTokenFormat).
+  if (settings.adminToken) {
+    assertBootstrapTokenFormat(
+      settings.adminToken,
+      "SECRET_MANAGER_ADMIN_TOKEN",
+    );
+  }
+  if (settings.readToken) {
+    assertBootstrapTokenFormat(settings.readToken, "SECRET_MANAGER_READ_TOKEN");
+  }
+
   const crypto = new CryptoManager(settings.masterKey);
   const db = new Database(settings.dbPath);
   const rateLimiter = new RateLimiter(settings.rateLimitPerMinute);

@@ -7,6 +7,7 @@ import {
   scopeIsSubset,
   parseNamedToken,
   isValidFolderName,
+  assertBootstrapTokenFormat,
 } from "../src/utils.js";
 
 function fakeReq(remoteAddress, xff) {
@@ -150,5 +151,28 @@ describe("isValidFolderName", () => {
   it("rejects empty and illegal characters", () => {
     expect(isValidFolderName("")).toBe(false);
     expect(isValidFolderName("bad/slash")).toBe(false);
+  });
+});
+
+describe("assertBootstrapTokenFormat", () => {
+  it("throws a FATAL error for a dotted bootstrap token", () => {
+    expect(() =>
+      assertBootstrapTokenFormat("name.secret", "SECRET_MANAGER_ADMIN_TOKEN"),
+    ).toThrow(/FATAL: SECRET_MANAGER_ADMIN_TOKEN contains a '\.'/);
+  });
+
+  it("accepts a clean bootstrap token (no dot)", () => {
+    expect(() =>
+      assertBootstrapTokenFormat(
+        "cleanbootstraptoken0123456789",
+        "SECRET_MANAGER_ADMIN_TOKEN",
+      ),
+    ).not.toThrow();
+  });
+
+  it("no-ops for an unset (null) token", () => {
+    expect(() =>
+      assertBootstrapTokenFormat(null, "SECRET_MANAGER_READ_TOKEN"),
+    ).not.toThrow();
   });
 });

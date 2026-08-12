@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import request from "supertest";
 import {
   makeApp,
@@ -15,6 +15,7 @@ beforeEach(() => {
   ctx = makeApp();
 });
 afterEach(() => {
+  vi.restoreAllMocks();
   ctx.cleanup();
 });
 
@@ -165,6 +166,43 @@ describe("named-miss vs bare-scan (timing oracle fix)", () => {
       .set(bearer(tokens[50]));
     expect(past.status).toBe(401);
   }, 30000);
+});
+
+describe("named-miss constant work (timing-oracle closed)", () => {
+  it("unknown name spends exactly one hash and never scans", async () => {
+    for (let i = 0; i < 5; i += 1) {
+      addToken(ctx.db, { name: `seed${i}`, role: "read" });
+    }
+    const verifySpy = vi.spyOn(cryptoManager, "verifyTokenAsync");
+    const listSpy = vi.spyOn(ctx.db, "listTokens");
+
+    const res = await request(ctx.app)
+      .get("/api/auth/me")
+      .set(bearer("nosuchname.deadbeefsecret"));
+
+    expect(res.status).toBe(401);
+    // Exactly one PBKDF2 (the DUMMY hash) — parity with a wrong-secret attempt.
+    expect(verifySpy).toHaveBeenCalledTimes(1);
+    // No fallback scan for a named token, so listTokens is never touched.
+    expect(listSpy).not.toHaveBeenCalled();
+  });
+
+  it("real name + wrong secret spends exactly one hash, no scan (parity)", async () => {
+    addToken(ctx.db, { name: "reader", role: "read" });
+    for (let i = 0; i < 5; i += 1) {
+      addToken(ctx.db, { name: `seed${i}`, role: "read" });
+    }
+    const verifySpy = vi.spyOn(cryptoManager, "verifyTokenAsync");
+    const listSpy = vi.spyOn(ctx.db, "listTokens");
+
+    const res = await request(ctx.app)
+      .get("/api/auth/me")
+      .set(bearer("reader.wrongsecret"));
+
+    expect(res.status).toBe(401);
+    expect(verifySpy).toHaveBeenCalledTimes(1);
+    expect(listSpy).not.toHaveBeenCalled();
+  });
 });
 
 describe("per-folder token scope", () => {
