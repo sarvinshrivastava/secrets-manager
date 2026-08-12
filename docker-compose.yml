@@ -23,12 +23,25 @@ services:
     # service level. Raise mem_limit if PBKDF2/large imports OOM.
     mem_limit: 256m
     pids_limit: 256
-    # Named volume, NOT a bind mount. A `./data` bind mount is created
-    # root-owned on a fresh clone; the image's `node` user (uid 1000) then can't
-    # create secrets.db -> SQLITE_CANTOPEN -> restart loop. A named volume is
-    # seeded from the image's already-node-owned /app/data, so writes succeed.
+    # Give the app time to finish its own graceful shutdown. index.js closes the
+    # HTTP server + DB on SIGTERM and has a 10s forced-exit backstop; Docker's
+    # DEFAULT grace is also 10s, so it would SIGKILL at exactly the moment the
+    # backstop fires — cutting off the SQLite WAL checkpoint mid-write. 30s
+    # leaves headroom for the clean path to always win.
+    stop_grace_period: 30s
+    # BIND MOUNT, NOT a named volume — this is load-bearing, do not "improve" it.
+    # The production box's live database is the host file `./data/secrets.db`
+    # (bind-mount layout from the original release). Switching to a named volume
+    # starts the app against an EMPTY database: every existing secret becomes
+    # invisible and every CI pipeline that reads from this vault breaks, while
+    # the real data sits untouched on the host. Keep reading the existing file.
+    #
+    # ON A FRESH BOX ONLY: a bind-mounted `./data` is created root-owned, and the
+    # image runs as `USER node` (uid 1000), which then cannot create secrets.db
+    # -> SQLITE_CANTOPEN -> crash loop. Pre-create it first:
+    #     mkdir -p data && chown 1000:1000 data
     volumes:
-      - secret-manager-data:/app/data
+      - ./data:/app/data
     healthcheck:
       # `curl` is NOT present in node:22-bookworm-slim, so a curl-based check can
       # never pass and the container stays permanently `unhealthy`. Node 22 ships
@@ -53,21 +66,40 @@ services:
 
   # Watches every container labeled `autoheal=true` and restarts it whenever
   # Docker marks it `unhealthy` — the recovery path `restart: unless-stopped`
-  # can't provide (that only fires on process exit). Mounts the Docker socket
-  # READ-ONLY so it can inspect health and issue restarts, nothing more.
-  # `restart: always` keeps the watchdog itself alive across reboots.
+  # can't provide (that only fires on process exit). `restart: always` keeps the
+  # watchdog itself alive across reboots.
+  #
+  # THIS IS THE HIGHEST-PRIVILEGE CONTAINER IN THIS FILE — not a "low-risk
+  # sidecar". Access to the Docker socket is equivalent to root on the host: any
+  # container holding it can start a new privileged container with `/` bind
+  # mounted and take over the box. Treat any change here as a change to host
+  # root, and audit this image before bumping it.
   autoheal:
-    # Pin a digest/tag in production if you want reproducible pulls; :latest is
-    # fine for a low-risk sidecar that only restarts unhealthy containers.
-    image: willfarrell/autoheal:latest
+    # PINNED BY DIGEST, deliberately. Because this container mounts the Docker
+    # socket, a mutable `:latest` tag is the biggest supply-chain surface we
+    # have: whoever can publish that tag gets host root on the next `docker
+    # compose up --build -d`. A digest is immutable content-addressing, so a
+    # compromised upstream tag cannot silently change what we run.
+    # Bump deliberately with:
+    #   docker pull willfarrell/autoheal:latest
+    #   docker inspect --format='{{index .RepoDigests 0}}' willfarrell/autoheal:latest
+    image: willfarrell/autoheal@sha256:b1a1d5323c8e69eaea7118374ea85cbe5a62713719145869a6bef224ffef5c0f
     container_name: secret-manager-autoheal
     restart: always
     environment:
       AUTOHEAL_CONTAINER_LABEL: autoheal
-      # Grace period after a restart before it's eligible to be healed again.
+      # ONE-TIME startup delay (seconds) before the autoheal daemon runs its
+      # FIRST monitoring cycle — it is NOT a per-container grace period after a
+      # restart. It only stops the watchdog from acting on containers that are
+      # still legitimately booting when the watchdog itself starts. The
+      # per-container boot allowance is the app's own healthcheck
+      # `start_period`, above.
       AUTOHEAL_START_PERIOD: "30"
     volumes:
+      # `:ro` protects the socket FILE (the inode) from being modified/replaced.
+      # It does NOT make the Docker API read-only — the API is request/response
+      # over this socket, and a read-only mount still allows full write
+      # operations: create/start/exec containers, mount host paths, i.e. host
+      # root. The only real mitigations are pinning the image (above) and not
+      # running this at all.
       - /var/run/docker.sock:/var/run/docker.sock:ro
-
-volumes:
-  secret-manager-data:

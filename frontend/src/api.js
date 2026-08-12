@@ -1,5 +1,6 @@
 // Centralised API client.
-// - 15s request timeout via AbortSignal.timeout
+// - 15s request timeout via AbortSignal.timeout, composed with any
+//   caller-supplied options.signal so caller-driven cancellation still works
 // - on 401: clear the stored token and notify the app once (no endless toasts)
 
 const REQUEST_TIMEOUT_MS = 15000;
@@ -25,6 +26,22 @@ function timeoutSignal() {
   return controller.signal;
 }
 
+// Compose the caller's cancellation signal (if any) with the request timeout so
+// neither one is lost. AbortSignal.any is available in evergreen browsers; on
+// older runtimes we honour the caller's signal, since caller-driven
+// cancellation matters more than the timeout backstop.
+function requestSignal(callerSignal) {
+  const timeout = timeoutSignal();
+  if (!callerSignal) return timeout;
+  if (
+    typeof AbortSignal !== "undefined" &&
+    typeof AbortSignal.any === "function"
+  ) {
+    return AbortSignal.any([callerSignal, timeout]);
+  }
+  return callerSignal;
+}
+
 async function apiFetch(path, token, options = {}) {
   const headers = { ...(options.headers || {}) };
   if (token) headers.Authorization = `Bearer ${token}`;
@@ -34,7 +51,9 @@ async function apiFetch(path, token, options = {}) {
     response = await fetch(path, {
       ...options,
       headers,
-      signal: timeoutSignal(),
+      // Must stay last: it deliberately overrides options.signal with the
+      // caller-signal + timeout composite built above.
+      signal: requestSignal(options.signal),
     });
   } catch (error) {
     if (

@@ -6,8 +6,11 @@ token hashes across every consuming repo — treat outages and data loss as
 production incidents.
 
 - **Container:** `secret-manager` (docker compose, `restart: unless-stopped`)
-- **Data:** named volume `secret-manager-data` mounted at `/app/data`
-- **DB file:** `/app/data/secrets.db` (SQLite, WAL mode)
+- **Data:** host **bind mount** `./data` → `/app/data` (i.e. the live DB is a
+  normal file on the host at `<app dir>/data/secrets.db`, reachable without
+  Docker). Deploying with a named volume instead would start the app against an
+  empty DB — see the comment in `docker-compose.yml`.
+- **DB file:** `/app/data/secrets.db` in-container = `/root/secrets-manager/data/secrets.db` on the host (SQLite, WAL mode)
 - **Listen:** `127.0.0.1:8000` only — public access is via the host reverse proxy
 - **Health:** `GET /healthz` → `{"status":"ok"}` (no auth)
 
@@ -47,13 +50,17 @@ production incidents.
 >   behind Basic-Auth / mTLS / an allowlisted source IP) that likewise does not
 >   use a bare catch-all `location /`.
 
-> The compose file uses a **named volume**, so there is no `./data` ownership
-> step to do. If you deliberately switch to a bind mount (`./data:/app/data`),
-> you MUST pre-create it writable by uid 1000 first, or the container
-> crash-loops on `SQLITE_CANTOPEN`:
+> The compose file uses a **bind mount** (`./data:/app/data`) so the container
+> keeps reading the host's existing database. A bind-mounted directory is created
+> root-owned, and the image runs as `USER node` (uid 1000), so on a fresh box you
+> MUST pre-create it writable by uid 1000 or the container crash-loops on
+> `SQLITE_CANTOPEN`:
 > ```bash
 > mkdir -p data && sudo chown 1000:1000 data
 > ```
+> Do **not** "fix" that by switching to a named volume: the app would then start
+> against an empty DB while the real secrets sit untouched in `./data`, and every
+> consuming CI pipeline would break.
 
 ---
 
@@ -66,11 +73,12 @@ production incidents.
 ```bash
 docker compose logs --tail=50 secret-manager
 ```
-Look for one of these two fatal signatures near the end of the log:
+Look for one of these fatal signatures near the end of the log:
 
 | Log signature | Cause | Remedy |
 |---|---|---|
 | `FATAL: all N stored secret(s) failed to decrypt` (from `index.js`) | Wrong `SECRET_MANAGER_MASTER_KEY` — the key doesn't match the one the DB was encrypted with (typo, unset, or rotated key over an old DB). The app hard-exits rather than serve a DB it can't decrypt. | Restore the correct `SECRET_MANAGER_MASTER_KEY` in `.env` and restart. If the key is truly lost, the values are unrecoverable — restore a DB + key pair that match (see §4), or start fresh (see §6). |
+| `FATAL: SECRET_MANAGER_ADMIN_TOKEN contains a '.'` (also possible for `SECRET_MANAGER_READ_TOKEN`; from `assertBootstrapTokenFormat` in `utils.js`) | The bootstrap token value contains a `.`, which is reserved as the separator in the `<name>.<secret>` wire format. A dotted token is parsed as a *named* token and can therefore never authenticate — it would silently brick the vault, so the app refuses to boot instead. | Set a **dotless** bootstrap token in `.env` (e.g. `openssl rand -hex 32`, which is hex and cannot contain a `.`) and redeploy. Note this changes the `admin`/`reader` token value: update any consumer holding the old one (see §7). |
 | `Error: ...` on startup about zero write tokens / `db.countWriteTokens() === 0` | No usable write token — the server refuses to boot without at least one active write path (bootstrap env token missing AND no runtime write token in the DB). | Set `SECRET_MANAGER_ADMIN_TOKEN` (bootstrap write token) in `.env` and `docker compose up -d` — it's re-upserted on startup (see §7). If the DB itself is the problem, restore from backup (§4). |
 
 After fixing the cause, `docker compose up -d` and confirm
@@ -93,14 +101,16 @@ After fixing the cause, `docker compose up -d` and confirm
   keep-last-N rotation.
 - **Schedule:** daily via cron. Example (adjust paths):
   ```cron
-  15 3 * * * DB_PATH=/opt/secret-manager/data/secrets.db BACKUP_DIR=/var/backups/secret-manager KEEP=14 /opt/secret-manager/scripts/backup.sh >> /var/log/secret-manager-backup.log 2>&1
+  15 3 * * * DB_PATH=/root/secrets-manager/data/secrets.db BACKUP_DIR=/var/backups/secret-manager KEEP=14 /root/secrets-manager/scripts/backup.sh >> /var/log/secret-manager-backup.log 2>&1
   ```
-- **Reaching the DB inside the named volume from the host:** either resolve the
-  volume mountpoint
-  (`docker volume inspect secret-manager-data -f '{{.Mountpoint}}'`) and point
-  `DB_PATH` at `<mountpoint>/secrets.db`, or run the backup inside the container
-  (`docker compose exec secret-manager sh -c 'sqlite3 /app/data/secrets.db ".backup /app/data/backup.db"'`)
-  and copy it out with `docker cp`.
+- **Reaching the DB from the host:** it is a plain bind-mounted file — point
+  `DB_PATH` straight at `<app dir>/data/secrets.db` (on the VPS:
+  `/root/secrets-manager/data/secrets.db`). No volume-mountpoint lookup and
+  no `docker cp` dance needed. `sqlite3 ".backup"` is safe while the container
+  runs.
+- **`sqlite3` must be installed on the host** (`apt-get install -y sqlite3`) —
+  the deploy workflow's pre-deploy backup is fail-closed and aborts the deploy
+  without it.
 - **OFF-SITE IS MANDATORY.** A backup on the same disk dies with the VPS. Ship
   each snapshot to object storage or another host. Value-level ciphertext is
   still decryptable by anyone who also holds `SECRET_MANAGER_MASTER_KEY`, so keep
@@ -118,12 +128,12 @@ docker compose stop secret-manager
 # 2. Verify the backup you intend to restore is sound.
 sqlite3 /path/to/secrets-<TS>.db 'PRAGMA integrity_check;'   # must print: ok
 
-# 3. Replace the live DB (inside the named volume). Remove stale WAL/SHM
+# 3. Replace the live DB (the bind-mounted host file). Remove stale WAL/SHM
 #    sidecars so the engine doesn't replay an old WAL over the restored file.
-VOL=$(docker volume inspect secret-manager-data -f '{{.Mountpoint}}')
-sudo rm -f "$VOL"/secrets.db "$VOL"/secrets.db-wal "$VOL"/secrets.db-shm
-sudo cp /path/to/secrets-<TS>.db "$VOL"/secrets.db
-sudo chown 1000:1000 "$VOL"/secrets.db     # must be owned by the node user (uid 1000)
+DATA=/root/secrets-manager/data        # the bind-mount source on the host
+sudo rm -f "$DATA"/secrets.db "$DATA"/secrets.db-wal "$DATA"/secrets.db-shm
+sudo cp /path/to/secrets-<TS>.db "$DATA"/secrets.db
+sudo chown 1000:1000 "$DATA"/secrets.db    # must be owned by the node user (uid 1000)
 
 # 4. Start and verify.
 docker compose start secret-manager
@@ -167,7 +177,8 @@ To rotate the master key safely:
 1. `GET /api/exports` (write token) to dump all secrets as plaintext `.env`
    while the OLD key is still in place.
 2. Stop the service, set the new `SECRET_MANAGER_MASTER_KEY`, and start with an
-   **empty** DB (fresh volume).
+   **empty** DB (move `data/secrets.db` — plus its `-wal`/`-shm` sidecars —
+   aside; keep them until the re-import is verified).
 3. Re-import via `POST /api/import`.
 4. Destroy the plaintext export immediately afterward.
 
@@ -200,8 +211,8 @@ re-establishes the `admin` / `reader` tokens with the new values.
 Symptoms: writes fail with `SQLITE_FULL` / `disk I/O error`, container may keep
 restarting, health check flaps.
 
-1. Check space: `df -h` and, for the volume,
-   `du -sh $(docker volume inspect secret-manager-data -f '{{.Mountpoint}}')`.
+1. Check space: `df -h` and, for the data dir,
+   `du -sh /root/secrets-manager/data`.
 2. Common culprits and fixes:
    - **Docker container logs** — capped in compose (`max-size:10m,max-file:3`).
      If an older deploy wasn't capped: `docker system prune` and truncate
@@ -215,3 +226,95 @@ restarting, health check flaps.
    - **WAL bloat** — `sqlite3 <db> 'PRAGMA wal_checkpoint(TRUNCATE);'`.
 3. Reads (the public CI path) keep working as long as there's a sliver of space;
    prioritize freeing enough to let writes and the daily prune run.
+
+---
+
+## 9. Deploying
+
+Deploys are **manual only** — there is no push-triggered deploy. This vault is
+what every other repo's CI reads its secrets from, so a human decides when it
+changes.
+
+**How to deploy**
+
+1. GitHub → **Actions** tab → **Deploy to VPS** → **Run workflow**.
+2. Inputs:
+   - `ref` — branch, tag, or full SHA to deploy (default `main`; a bare branch
+     name is resolved against `origin`, so `main` → `origin/main`).
+   - `skip_backup` — leave `false`. `true` is **emergency only**: it deploys with
+     no fresh restore point.
+3. Watch the run. A `concurrency` group serializes deploys, so a second run
+   queues rather than racing the first.
+
+**What the run does, in order**
+
+1. SSHes to `${{ secrets.VPS_HOST }}` as `root`, `cd /root/secrets-manager`,
+   and aborts unless that is a git repo.
+2. Records the current SHA as the rollback target.
+3. **Backs up the DB, fail-closed** via `scripts/backup.sh`
+   (`sqlite3 ".backup"` + `integrity_check`, output in
+   `/var/backups/secret-manager`, `KEEP=14`). If `sqlite3` is missing or the
+   backup fails, the deploy **aborts before touching anything** — the running
+   service is untouched. Install `sqlite3`, or re-run with `skip_backup=true` if
+   you accept the risk.
+4. `git fetch origin --prune` then `git checkout -f <ref>`. `.env` and `data/`
+   are gitignored, so the master key, bootstrap tokens, and the live SQLite DB
+   all survive the checkout.
+5. `docker compose up --build -d`.
+
+**What the health gate checks**
+
+- **Liveness:** polls `http://127.0.0.1:8000/healthz` (loopback-only, hence
+  on-box over SSH) for up to **90s**, expecting HTTP **200**.
+- **Version fingerprint:** `GET http://127.0.0.1:8000/api/folders` must **not**
+  return `404`. `/healthz` alone cannot prove the new code is live — the old
+  release answers it identically. `/api/folders` exists only in this release, so
+  an unauthenticated `401`/`403` is the expected pass; `404` means the old
+  container is still serving.
+- **Public reachability:** the `public_health_url` input (default
+  `https://secrets.vps.sarvinshrivastava.space/healthz`) must return **200**
+  from outside the box. The two checks above only prove the container is healthy
+  *on loopback*. This release narrowed the published port from `0.0.0.0:8000` to
+  `127.0.0.1:8000`, so if the host's reverse proxy forwards anywhere other than
+  loopback, the endpoint every CI pipeline actually calls goes dark while both
+  on-box gates stay green. Blank the input to skip this check.
+
+**Rollback is automatic.** If the build or any gate fails, the run prints
+`docker compose logs --tail=50`, checks out the previous SHA, rebuilds, re-polls
+health, reports whether service was restored, and **exits non-zero** (red run).
+If the rollback itself fails to come back healthy, the log says so explicitly —
+that is a manual-intervention incident (check `.env`, disk space, and §4).
+
+**One-time prerequisites**
+
+- Repo secrets **`VPS_HOST`** and **`VPS_SSH_KEY`** (Settings → Secrets and
+  variables → Actions). These come from GitHub secrets **on purpose, not from
+  this vault**: the vault cannot bootstrap from itself, and if a bad deploy broke
+  it, the rollback deploy would lose its own credentials exactly when it needs
+  them. (Sibling repos that fetch VPS creds *from* this service must not be
+  copied here.)
+- **`sqlite3` installed on the host** — `apt-get install -y sqlite3`. Without it
+  every deploy aborts at the backup step.
+- **`curl` installed on the host** — the health gate uses it; the deploy aborts
+  early if it's missing, before changing anything.
+- **`data/` owned by uid 1000** — `chown 1000:1000 /root/secrets-manager/data`
+  (bind mount + `USER node`; see §1).
+- The checkout at `/root/secrets-manager` must already exist with its `.env`
+  in place. The workflow updates an existing deployment; it does not clone.
+
+### Reverse proxy — CHANGED in this release
+
+This release **moved the admin UI from `/secret-manager/` to `/`**. Consequences
+to handle at cutover:
+
+- The **old UI path `/secret-manager/` now 404s.** Update bookmarks; if the proxy
+  rewrites/strips that prefix, remove the rule.
+- The public vhost must expose **only** `GET /api/secrets/:folder/:key` and
+  `/healthz`, via explicit `location` matches. Because the SPA now sits at `/`, a
+  bare catch-all `location / { proxy_pass ... }` would re-expose the whole
+  internal API — `/api/tokens`, `/api/exports`, `/api/import`, `/api/secrets`
+  list, `/api/folders`, `/api/audit-logs` — to the internet.
+- Reach the UI at `/` through an **SSH tunnel**, not the public proxy:
+  `ssh -L 8000:127.0.0.1:8000 <host>`, then open `http://localhost:8000/`.
+
+See the DANGER block in §1 for the full rules.

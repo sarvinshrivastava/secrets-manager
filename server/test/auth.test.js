@@ -166,6 +166,25 @@ describe("named-miss vs bare-scan (timing oracle fix)", () => {
       .set(bearer(tokens[50]));
     expect(past.status).toBe(401);
   }, 30000);
+
+  it("bootstrap-named bare token authenticates even when inserted past the cap", async () => {
+    // MAX_SCAN_TOKENS worth of filler that ALL sort before 'admin' by name, so
+    // without bootstrap prioritization 'admin' would fall outside the cap.
+    for (let i = 0; i < 55; i += 1) {
+      const name = `Afiller${String(i).padStart(2, "0")}`;
+      addBareToken(ctx.db, {
+        name,
+        role: "write",
+        raw: `scan-${name}-secretvalue0123456789`,
+      });
+    }
+    // Inserted LAST, and sorts after every filler row.
+    const bootRaw = addBareToken(ctx.db, { name: "admin", role: "write" });
+
+    const res = await request(ctx.app).get("/api/auth/me").set(bearer(bootRaw));
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ token_name: "admin", role: "write" });
+  }, 30000);
 });
 
 describe("named-miss constant work (timing-oracle closed)", () => {

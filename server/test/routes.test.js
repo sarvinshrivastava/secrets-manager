@@ -295,6 +295,32 @@ describe("audit log gating", () => {
     expect(res.status).toBe(403);
     expect(res.body.detail).toBe("Admin token required");
   });
+
+  it("audit-log denial for a scoped token is itself audited", async () => {
+    const scoped = addToken(ctx.db, {
+      name: "prober",
+      role: "write",
+      scope: "A",
+    });
+    const denied = await request(ctx.app)
+      .get("/api/audit-logs")
+      .set(bearer(scoped));
+    expect(denied.status).toBe(403);
+
+    // Read it back as the unscoped admin — the denial must be on the record.
+    const logs = await request(ctx.app)
+      .get("/api/audit-logs")
+      .set(bearer(write));
+    expect(logs.status).toBe(200);
+    const row = logs.body.events.find(
+      (e) =>
+        e.action === "authz" &&
+        e.status === "forbidden" &&
+        e.token_name === "prober",
+    );
+    expect(row).toBeTruthy();
+    expect(row.details).toBe("Admin token required");
+  });
 });
 
 describe("error handler + 404", () => {

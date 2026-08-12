@@ -1,0 +1,300 @@
+name: Deploy to VPS
+
+# MANUAL DISPATCH ONLY — never `on: push`.
+#
+# Two reasons, both deliberate:
+#   1. Repo policy: deploys of this service are user-triggered. It is the vault
+#      every other repo's CI reads its secrets from; a bad deploy takes down all
+#      of them, so a human decides when it happens.
+#   2. An `on: push` trigger in this file would fire an unsupervised production
+#      deploy the instant the file itself merged to main.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref to deploy (branch, tag, or full SHA)"
+        required: false
+        default: "main"
+      skip_backup:
+        description: "EMERGENCY ONLY: deploy without taking a DB backup first"
+        required: false
+        default: false
+        type: boolean
+      # This service predates the /root/apps/<name> convention every other
+      # service on the box follows — its checkout lives at /root/secrets-manager.
+      # Exposed as an input so the path is never a buried constant again.
+      app_dir:
+        description: "Checkout directory on the VPS"
+        required: false
+        default: "/root/secrets-manager"
+      # Verified from OUTSIDE the box, through the reverse proxy. Blank skips
+      # the check; see gate 6c for why loopback health alone is not enough.
+      public_health_url:
+        description: "Public /healthz URL to verify after deploy"
+        required: false
+        default: "https://secrets.vps.sarvinshrivastava.space/healthz"
+
+# One deploy at a time. Two overlapping runs would race on the same working
+# tree, the same containers, and — worst case — each other's rollback, leaving
+# the box on an unknown commit. Do NOT cancel-in-progress: interrupting a deploy
+# mid-rollback is how you end up with a half-deployed vault.
+concurrency:
+  group: deploy-vps
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          DEPLOY_REF: ${{ inputs.ref }}
+          SKIP_BACKUP: ${{ inputs.skip_backup }}
+          APP_DIR_IN: ${{ inputs.app_dir }}
+          PUBLIC_HEALTH_URL_IN: ${{ inputs.public_health_url }}
+        with:
+          # Credentials come STRAIGHT FROM GITHUB ACTIONS REPO SECRETS.
+          #
+          # Sibling repos fetch VPS_HOST / VPS_SSH_KEY from this very vault. This
+          # repo must NOT do that:
+          #   - it cannot bootstrap from itself (chicken-and-egg), and
+          #   - if a bad deploy breaks the vault, the rollback deploy would lose
+          #     its own credentials at exactly the moment it needs them.
+          # One-time setup: add repo secrets VPS_HOST and VPS_SSH_KEY.
+          host: ${{ secrets.VPS_HOST }}
+          username: root
+          key: ${{ secrets.VPS_SSH_KEY }}
+          # Forward the dispatch inputs as remote env vars instead of
+          # interpolating ${{ }} into the script body — keeps run-time input out
+          # of the shell text (no script injection) and out of the log.
+          envs: DEPLOY_REF,SKIP_BACKUP,APP_DIR_IN,PUBLIC_HEALTH_URL_IN
+          command_timeout: 20m
+          script: |
+            set -euo pipefail
+
+            APP_DIR="${APP_DIR_IN:-/root/secrets-manager}"
+            HEALTH_URL=http://127.0.0.1:8000/healthz
+            FINGERPRINT_URL=http://127.0.0.1:8000/api/folders
+            PUBLIC_HEALTH_URL="${PUBLIC_HEALTH_URL_IN:-}"
+            DEPLOY_REF="${DEPLOY_REF:-main}"
+            SKIP_BACKUP="${SKIP_BACKUP:-false}"
+
+            echo "==> target dir: $APP_DIR"
+            echo "==> requested ref: $DEPLOY_REF"
+
+            # ---- 1. Locate the checkout ----------------------------------
+            cd "$APP_DIR" 2>/dev/null || {
+              echo "FATAL: $APP_DIR does not exist. This workflow updates an" \
+                   "EXISTING deployment; it does not clone. Clone the repo to" \
+                   "$APP_DIR (with its .env and data/ in place) first."
+              exit 1
+            }
+            if [ ! -d .git ]; then
+              echo "FATAL: $APP_DIR is not a git repository (no .git). Refusing" \
+                   "to deploy — a git-less directory here means the box was set" \
+                   "up by hand and 'git checkout' would not do what you expect."
+              exit 1
+            fi
+
+            # ---- 2. Record the rollback target ---------------------------
+            PREV="$(git rev-parse HEAD)"
+            echo "==> current sha (rollback target): $PREV"
+
+            # curl drives both health gates. If it is missing we could not tell
+            # a good deploy from a broken one, so check BEFORE changing anything.
+            command -v curl >/dev/null 2>&1 || {
+              echo "FATAL: curl not found on the host — the health gate cannot" \
+                   "run, so a broken deploy could not be detected. Install it:" \
+                   "apt-get install -y curl"
+              exit 1
+            }
+
+            # ---- 3. Backup, FAIL CLOSED ----------------------------------
+            # This is a stateful vault whose SQLite DB is the only copy of every
+            # CI secret and token hash. Deploying it with no fresh backup is the
+            # exact risk this gate exists for — so a failed backup aborts BEFORE
+            # anything is touched, rather than after.
+            if [ "$SKIP_BACKUP" = "true" ]; then
+              echo "!!! WARNING: backup SKIPPED by operator request (skip_backup=true)."
+              echo "!!! There is no fresh restore point for this deploy."
+            else
+              command -v sqlite3 >/dev/null 2>&1 || {
+                echo "FATAL: sqlite3 not found — cannot take a WAL-safe backup." \
+                     "Install it (apt-get install -y sqlite3) and re-run, or" \
+                     "re-run with skip_backup=true if this is an emergency and" \
+                     "you accept deploying with no restore point."
+                exit 1
+              }
+              [ -f scripts/backup.sh ] || {
+                echo "FATAL: scripts/backup.sh missing from the current checkout." \
+                     "Cannot back up. Re-run with skip_backup=true only if you" \
+                     "accept deploying with no restore point."
+                exit 1
+              }
+
+              if [ -f "$APP_DIR/data/secrets.db" ]; then
+                echo "==> backing up $APP_DIR/data/secrets.db"
+                # backup.sh reads DB_PATH / BACKUP_DIR / KEEP from env, uses
+                # sqlite3 ".backup" (WAL-safe, no downtime) and runs
+                # PRAGMA integrity_check on the snapshot before keeping it.
+                # It needs bash (mapfile), so invoke it explicitly with bash.
+                DB_PATH="$APP_DIR/data/secrets.db" \
+                BACKUP_DIR=/var/backups/secret-manager \
+                KEEP=14 \
+                  bash scripts/backup.sh || {
+                    echo "FATAL: backup failed — ABORTING before any change." \
+                         "The running service is untouched. Investigate the" \
+                         "error above (disk full? integrity_check failure?)."
+                    exit 1
+                  }
+                echo "==> backup ok"
+              else
+                # No DB file = no data to lose (fresh box / first deploy). The
+                # guard's purpose is already satisfied, so continue loudly.
+                echo "!!! NOTE: no DB at $APP_DIR/data/secrets.db — treating as a" \
+                     "first deploy with no data to back up."
+              fi
+            fi
+
+            # ---- 4. Fetch and check out the requested ref -----------------
+            # `.env` and `data/` are gitignored, so `git checkout -f` leaves both
+            # untouched: the master key, bootstrap tokens, and the live SQLite DB
+            # all survive the deploy. (-f only discards TRACKED modifications.)
+            echo "==> fetching origin"
+            git fetch origin --prune
+
+            if git rev-parse --verify --quiet "origin/$DEPLOY_REF^{commit}" >/dev/null; then
+              TARGET="origin/$DEPLOY_REF"          # branch name, e.g. main -> origin/main
+            elif git rev-parse --verify --quiet "$DEPLOY_REF^{commit}" >/dev/null; then
+              TARGET="$DEPLOY_REF"                 # tag or raw SHA
+            else
+              echo "FATAL: ref '$DEPLOY_REF' not found on origin or locally." \
+                   "Nothing was changed."
+              exit 1
+            fi
+
+            echo "==> checking out $TARGET"
+            git checkout -f "$TARGET"
+            NEW="$(git rev-parse HEAD)"
+            echo "==> new sha: $NEW"
+
+            # ---- helpers used by the gates and the rollback ---------------
+            http_code() {
+              curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$1" || echo "000"
+            }
+
+            # Poll for up to ~90s (45 * 2s). The container binds 127.0.0.1:8000,
+            # so this only works from on-box — which is why it runs over SSH.
+            wait_for_health() {
+              local i code
+              for i in $(seq 1 45); do
+                code="$(http_code "$HEALTH_URL")"
+                if [ "$code" = "200" ]; then
+                  echo "==> /healthz 200 after $((i * 2))s"
+                  return 0
+                fi
+                sleep 2
+              done
+              echo "!!! /healthz never returned 200 within 90s (last code: $code)"
+              return 1
+            }
+
+            rollback() {
+              echo "======================================================="
+              echo "!!! GATE FAILED — ROLLING BACK to $PREV"
+              echo "======================================================="
+              echo "--- last 50 log lines from the failed release ---"
+              docker compose logs --tail=50 || true
+              echo "--- restoring $PREV ---"
+              git checkout -f "$PREV"
+              docker compose up --build -d
+              if wait_for_health; then
+                echo "=== ROLLBACK OK: service healthy again on $PREV."
+                echo "=== The bad release ($NEW) was NOT deployed. Fix and re-run."
+              else
+                echo "=== ROLLBACK FAILED: service is STILL DOWN on $PREV."
+                echo "=== MANUAL INTERVENTION REQUIRED. Check .env, disk space,"
+                echo "=== and 'docker compose logs'; restore the DB per RUNBOOK §4"
+                echo "=== if the data volume is implicated."
+              fi
+              exit 1
+            }
+
+            # ---- 5. Build and start --------------------------------------
+            echo "==> docker compose up --build -d"
+            docker compose up --build -d || rollback
+
+            # ---- 6a. Health gate ----------------------------------------
+            echo "==> waiting for health at $HEALTH_URL"
+            wait_for_health || rollback
+
+            # ---- 6b. Version fingerprint --------------------------------
+            # /healthz alone cannot tell us the NEW code is running — the old
+            # release answers it identically. GET /api/folders exists only in
+            # this release: 401/403 (unauthenticated) proves the route is
+            # registered; 404 means the old container is still serving.
+            FP_CODE="$(http_code "$FINGERPRINT_URL")"
+            echo "==> fingerprint GET /api/folders -> $FP_CODE"
+            if [ "$FP_CODE" = "404" ]; then
+              echo "!!! /api/folders returned 404 — the OLD code is still running."
+              echo "!!! The container did not actually pick up the new build."
+              rollback
+            fi
+            if [ "$FP_CODE" = "000" ]; then
+              echo "!!! fingerprint request failed outright (no HTTP response)."
+              rollback
+            fi
+
+            # ---- 6c. Public reachability gate ----------------------------
+            # 6a/6b only prove the container is healthy ON LOOPBACK. This
+            # release narrows the published port from 0.0.0.0:8000 to
+            # 127.0.0.1:8000, so if the host's reverse proxy forwards to
+            # anything other than loopback, the public endpoint every CI
+            # pipeline actually calls goes dark while both gates above stay
+            # green. Verify the outside path too, and roll back if it broke.
+            if [ -n "${PUBLIC_HEALTH_URL:-}" ]; then
+              echo "==> public gate: $PUBLIC_HEALTH_URL"
+              PUB_CODE="$(http_code "$PUBLIC_HEALTH_URL")"
+              echo "==> public /healthz -> $PUB_CODE"
+              if [ "$PUB_CODE" != "200" ]; then
+                echo "!!! the service is healthy on loopback but NOT reachable" \
+                     "publicly (code: $PUB_CODE). The most likely cause is the" \
+                     "reverse proxy forwarding somewhere other than" \
+                     "127.0.0.1:8000, which this release's loopback-only port" \
+                     "binding no longer serves."
+                rollback
+              fi
+            else
+              echo "==> public gate skipped (PUBLIC_HEALTH_URL not set)"
+            fi
+
+            # ---- 7. Success ----------------------------------------------
+            echo "======================================================="
+            echo "=== DEPLOY OK"
+            echo "===   ref:         $DEPLOY_REF -> $TARGET"
+            echo "===   deployed:    $NEW"
+            echo "===   previous:    $PREV"
+            echo "===   health:      /healthz 200"
+            echo "===   fingerprint: /api/folders $FP_CODE (not 404 = new code live)"
+            echo "======================================================="
+            docker compose ps
+
+      - name: Write run summary
+        if: always()
+        run: |
+          {
+            echo "## Deploy to VPS — \`${{ job.status }}\`"
+            echo ""
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Ref requested | \`${{ inputs.ref }}\` |"
+            echo "| Backup skipped | \`${{ inputs.skip_backup }}\` |"
+            echo "| Triggered by | @${{ github.actor }} |"
+            echo "| Result | \`${{ job.status }}\` |"
+            echo ""
+            echo "Gates: \`/healthz\` must return 200 within 90s, then"
+            echo "\`GET /api/folders\` must not return 404. On failure the deploy"
+            echo "rolls back to the previous commit automatically and this run is red —"
+            echo "read the SSH step log for the rollback outcome."
+          } >> "$GITHUB_STEP_SUMMARY"

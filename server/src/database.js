@@ -141,8 +141,13 @@ export class Database {
     this.countWriteTokensStmt = this.db.prepare(
       "SELECT COUNT(*) AS total FROM tokens WHERE role = 'write' AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)",
     );
+    // ORDER BY name is load-bearing, not cosmetic: the legacy bare-token scan in
+    // middleware/auth.js caps how many rows it will hash (MAX_SCAN_TOKENS). Without
+    // a stable order SQLite may return rows in any order, so WHICH tokens fall
+    // inside that cap would vary between calls and a valid bare/bootstrap token
+    // could authenticate intermittently.
     this.listTokensStmt = this.db.prepare(
-      "SELECT name, role, salt, token_hash, scope, created_at, updated_at, expires_at, revoked_at FROM tokens",
+      "SELECT name, role, salt, token_hash, scope, created_at, updated_at, expires_at, revoked_at FROM tokens ORDER BY name",
     );
     this.upsertTokenStmt = this.db.prepare(`
       INSERT INTO tokens (name, role, salt, token_hash, scope, created_at, updated_at)

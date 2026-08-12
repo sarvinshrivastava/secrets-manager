@@ -33,21 +33,39 @@ export function migrateEncryptionIfNeeded(db, crypto) {
         // not PBKDF2-encrypted — try legacy below
       }
 
+      // Classification try — decrypt/encrypt ONLY. A throw here really does mean
+      // "this row decrypts under neither key", which is what `failed` reports.
+      let encrypted;
       try {
         const plaintext = crypto.decryptWithLegacyKey(
           row.nonce,
           row.ciphertext,
         );
-        const encrypted = crypto.encryptValue(plaintext);
+        encrypted = crypto.encryptValue(plaintext);
+      } catch {
+        failed.push(row.id);
+        continue;
+      }
+
+      // The DB write sits OUTSIDE that try on purpose: a write failure is a
+      // storage problem, not a decrypt problem. Folding it into `failed` would
+      // report a healthy-but-unwritable vault as corruption / a wrong master key.
+      // Surface it distinctly and let it propagate so the transaction rolls back.
+      try {
         db.migrateSecretEncryption(
           row.id,
           encrypted.nonce,
           encrypted.ciphertext,
         );
-        migrated += 1;
-      } catch {
-        failed.push(row.id);
+      } catch (err) {
+        throw new Error(
+          `Failed to WRITE re-encrypted secret id=${row.id} during master-key ` +
+            `migration (decryption succeeded; this is a database write error, ` +
+            `not corruption): ${err.message}`,
+          { cause: err },
+        );
       }
+      migrated += 1;
     }
   });
 
