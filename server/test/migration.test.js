@@ -108,6 +108,29 @@ describe("migrateEncryptionIfNeeded", () => {
     ctx.cleanup();
   });
 
+  it("surfaces a DB write failure instead of counting it as a decrypt failure", () => {
+    const ctx = makeApp();
+    const legEnc = encryptWith(cryptoManager.legacyKey, "legacy-value");
+    ctx.db.createSecret("Root", "LEG", legEnc.nonce, legEnc.ciphertext);
+
+    // Decryption succeeds; only the WRITE blows up.
+    ctx.db.migrateSecretEncryption = () => {
+      throw new Error("disk I/O error");
+    };
+
+    expect(() => migrateEncryptionIfNeeded(ctx.db, cryptoManager)).toThrow(
+      /database write error/,
+    );
+
+    // Transaction rolled back: the row is untouched, still legacy-encrypted.
+    delete ctx.db.migrateSecretEncryption;
+    const row = ctx.db.getSecret("Root", "LEG");
+    expect(cryptoManager.decryptWithLegacyKey(row.nonce, row.ciphertext)).toBe(
+      "legacy-value",
+    );
+    ctx.cleanup();
+  });
+
   it("is a no-op on an empty vault", () => {
     const ctx = makeApp();
     const result = migrateEncryptionIfNeeded(ctx.db, cryptoManager);

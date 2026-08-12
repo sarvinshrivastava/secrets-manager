@@ -6,6 +6,12 @@ import { extractToken, getClientIp, parseNamedToken } from "../utils.js";
 // (`<name>.<secret>`) never hit this path — they verify exactly one hash.
 const MAX_SCAN_TOKENS = 50;
 
+// Bootstrap token names (seeded from SECRET_MANAGER_ADMIN_TOKEN /
+// SECRET_MANAGER_READ_TOKEN). These are the tokens that legitimately arrive BARE,
+// so they get scanned first and can never be pushed outside MAX_SCAN_TOKENS by
+// however many other rows happen to sort ahead of them.
+const BOOTSTRAP_TOKEN_NAMES = new Set(["admin", "reader"]);
+
 // Dummy PBKDF2 material. A named token whose NAME does not resolve spends ONE
 // hash against these throwaway values so its latency matches a name-that-resolves
 // -but-wrong-secret — closing the token-name enumeration timing oracle.
@@ -53,6 +59,17 @@ export function createAuthMiddleware(db, crypto, trustedProxyIps) {
   // Capped scan over ACTIVE tokens only — revoked/expired rows are filtered out
   // BEFORE hashing so no PBKDF2 is spent on them. Used only for bare (legacy /
   // bootstrap) tokens that carry no lookup name.
+  //
+  // Candidate ORDER matters because the list is truncated to MAX_SCAN_TOKENS:
+  // whichever rows land past the cap are never hashed and so can never
+  // authenticate. Two things make that deterministic and safe:
+  //   1. db.listTokens() sorts by name in SQL — without an ORDER BY, row order is
+  //      unspecified, so a valid bare token could pass one request and fail the
+  //      next purely on storage-layer ordering.
+  //   2. Bootstrap names sort ahead of everything else here (stable sort keeps the
+  //      by-name order inside each group), so `admin`/`reader` — the only tokens
+  //      expected to be presented bare — are always inside the cap.
+  // The cap itself stays: it is the event-loop-DoS guard.
   async function scanTokens(token) {
     const now = new Date();
     const active = db
@@ -60,6 +77,11 @@ export function createAuthMiddleware(db, crypto, trustedProxyIps) {
       .filter(
         (r) =>
           !r.revoked_at && (!r.expires_at || now <= new Date(r.expires_at)),
+      )
+      .sort(
+        (a, b) =>
+          (BOOTSTRAP_TOKEN_NAMES.has(b.name) ? 1 : 0) -
+          (BOOTSTRAP_TOKEN_NAMES.has(a.name) ? 1 : 0),
       )
       .slice(0, MAX_SCAN_TOKENS);
 

@@ -1,6 +1,9 @@
 import { Router } from "express";
 
-export function createAuditRouter(db, { requireAuth, requireWriteAccess }) {
+export function createAuditRouter(
+  db,
+  { requireAuth, requireWriteAccess, writeAudit },
+) {
   const router = Router();
 
   // Audit logs leak every key name, token name, and client IP ACROSS ALL scopes
@@ -8,6 +11,14 @@ export function createAuditRouter(db, { requireAuth, requireWriteAccess }) {
   // read the global audit log.
   router.get("/", requireAuth, requireWriteAccess, (req, res) => {
     if (req.auth.scope !== "*") {
+      // Log the denial like requireWriteAccess does — a scoped token probing the
+      // global audit log must leave a trace in that same log.
+      writeAudit(req, {
+        action: "authz",
+        status: "forbidden",
+        tokenName: req.auth.name,
+        details: "Admin token required",
+      });
       return res.status(403).json({ detail: "Admin token required" });
     }
 
