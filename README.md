@@ -41,7 +41,8 @@ Lightweight self-hosted environment variable (secrets) manager for hobby/small i
 │       └── styles.css
 ├── scripts
 │   └── backup.sh               # WAL-safe hot backup + rotation
-├── data/                       # secrets.db lives here (named volume in Docker)
+├── data/                       # secrets.db lives here (bind-mounted into Docker)
+├── .github/workflows/deploy.yml # manual-dispatch VPS deploy (health gate + auto-rollback)
 ├── .env.example
 ├── .dockerignore
 ├── docker-compose.yml
@@ -78,8 +79,11 @@ The public fetch route is folder-scoped: `GET /api/secrets/:folder/:key`.
 Token/folder management is gated on scope, not just role:
 
 - Only a **`*`-scoped write token** is an admin — it may manage other tokens
-  (create / rotate / revoke) and rename folders. A folder-scoped write token can
-  read/write secrets in its folders but cannot administer tokens or folders.
+  (create / rotate / revoke), rename folders, and **read the audit log**
+  (`GET /api/audit-logs`). A folder-scoped write token can read/write secrets in
+  its folders but cannot administer tokens or folders, and cannot read the audit
+  log — those entries expose key names, token names, and client IPs from **every**
+  folder, so a scoped token reading them would escape its own scope.
 - A token may only **grant a scope that is a subset of its own**. A token scoped
   to `["ServiceA","ServiceB"]` can mint a token scoped to `["ServiceA"]`, never a
   `*`-scoped or broader-scoped one. Only a `*`-scoped admin can mint another
@@ -156,6 +160,21 @@ docker compose up --build -d
 Open UI: `http://localhost:8000/` (the container binds to
 `127.0.0.1:8000` — for a real deployment reach it through the reverse proxy, not
 this port directly). See RUNBOOK.md for VPS deployment specifics.
+
+`./data` is **bind-mounted** into the container, because the production host's
+live `data/secrets.db` is the real database. On a fresh box create it writable by
+uid 1000 (`mkdir -p data && chown 1000:1000 data`) before the first `up`, or the
+container crash-loops on `SQLITE_CANTOPEN`.
+
+## Deploying
+
+Deploys are **manual only**: run the **Deploy to VPS** workflow
+(`.github/workflows/deploy.yml`) from the repo's **Actions** tab, optionally
+choosing a `ref` (default `main`). It backs up the SQLite DB (fail-closed),
+checks out the ref on the VPS, rebuilds, then gates on `/healthz` plus a
+`GET /api/folders` version fingerprint — and **rolls back automatically** if
+either gate fails. Prerequisites and the full procedure are in
+[RUNBOOK.md §9 “Deploying”](RUNBOOK.md).
 
 ## API Endpoints
 
@@ -267,7 +286,7 @@ curl -s -X POST http://localhost:8000/api/import \
 | Method | Path | Auth | Notes |
 |---|---|---|---|
 | `GET` | `/api/auth/me` | read | `{ "token_name", "role" }` for the presented token |
-| `GET` | `/api/audit-logs` | read | Query params: `action`, `status`, `key`, `token_name`, `limit` (1–500, default 100) |
+| `GET` | `/api/audit-logs` | **admin** (`*`-scoped write) | Query params: `action`, `status`, `key`, `token_name`, `limit` (1–500, default 100). A folder-scoped token gets `403 {"detail":"Admin token required"}` — the log spans all folders |
 
 ## Security Notes
 
