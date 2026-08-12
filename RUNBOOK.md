@@ -271,8 +271,15 @@ changes.
   release answers it identically. `/api/folders` exists only in this release, so
   an unauthenticated `401`/`403` is the expected pass; `404` means the old
   container is still serving.
+- **Public reachability:** the `public_health_url` input (default
+  `https://secrets.vps.sarvinshrivastava.space/healthz`) must return **200**
+  from outside the box. The two checks above only prove the container is healthy
+  *on loopback*. This release narrowed the published port from `0.0.0.0:8000` to
+  `127.0.0.1:8000`, so if the host's reverse proxy forwards anywhere other than
+  loopback, the endpoint every CI pipeline actually calls goes dark while both
+  on-box gates stay green. Blank the input to skip this check.
 
-**Rollback is automatic.** If the build or either gate fails, the run prints
+**Rollback is automatic.** If the build or any gate fails, the run prints
 `docker compose logs --tail=50`, checks out the previous SHA, rebuilds, re-polls
 health, reports whether service was restored, and **exits non-zero** (red run).
 If the rollback itself fails to come back healthy, the log says so explicitly —

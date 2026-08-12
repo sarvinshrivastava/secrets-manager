@@ -27,6 +27,12 @@ on:
         description: "Checkout directory on the VPS"
         required: false
         default: "/root/secrets-manager"
+      # Verified from OUTSIDE the box, through the reverse proxy. Blank skips
+      # the check; see gate 6c for why loopback health alone is not enough.
+      public_health_url:
+        description: "Public /healthz URL to verify after deploy"
+        required: false
+        default: "https://secrets.vps.sarvinshrivastava.space/healthz"
 
 # One deploy at a time. Two overlapping runs would race on the same working
 # tree, the same containers, and — worst case — each other's rollback, leaving
@@ -46,6 +52,7 @@ jobs:
           DEPLOY_REF: ${{ inputs.ref }}
           SKIP_BACKUP: ${{ inputs.skip_backup }}
           APP_DIR_IN: ${{ inputs.app_dir }}
+          PUBLIC_HEALTH_URL_IN: ${{ inputs.public_health_url }}
         with:
           # Credentials come STRAIGHT FROM GITHUB ACTIONS REPO SECRETS.
           #
@@ -61,7 +68,7 @@ jobs:
           # Forward the dispatch inputs as remote env vars instead of
           # interpolating ${{ }} into the script body — keeps run-time input out
           # of the shell text (no script injection) and out of the log.
-          envs: DEPLOY_REF,SKIP_BACKUP,APP_DIR_IN
+          envs: DEPLOY_REF,SKIP_BACKUP,APP_DIR_IN,PUBLIC_HEALTH_URL_IN
           command_timeout: 20m
           script: |
             set -euo pipefail
@@ -69,6 +76,7 @@ jobs:
             APP_DIR="${APP_DIR_IN:-/root/secrets-manager}"
             HEALTH_URL=http://127.0.0.1:8000/healthz
             FINGERPRINT_URL=http://127.0.0.1:8000/api/folders
+            PUBLIC_HEALTH_URL="${PUBLIC_HEALTH_URL_IN:-}"
             DEPLOY_REF="${DEPLOY_REF:-main}"
             SKIP_BACKUP="${SKIP_BACKUP:-false}"
 
@@ -236,6 +244,29 @@ jobs:
             if [ "$FP_CODE" = "000" ]; then
               echo "!!! fingerprint request failed outright (no HTTP response)."
               rollback
+            fi
+
+            # ---- 6c. Public reachability gate ----------------------------
+            # 6a/6b only prove the container is healthy ON LOOPBACK. This
+            # release narrows the published port from 0.0.0.0:8000 to
+            # 127.0.0.1:8000, so if the host's reverse proxy forwards to
+            # anything other than loopback, the public endpoint every CI
+            # pipeline actually calls goes dark while both gates above stay
+            # green. Verify the outside path too, and roll back if it broke.
+            if [ -n "${PUBLIC_HEALTH_URL:-}" ]; then
+              echo "==> public gate: $PUBLIC_HEALTH_URL"
+              PUB_CODE="$(http_code "$PUBLIC_HEALTH_URL")"
+              echo "==> public /healthz -> $PUB_CODE"
+              if [ "$PUB_CODE" != "200" ]; then
+                echo "!!! the service is healthy on loopback but NOT reachable" \
+                     "publicly (code: $PUB_CODE). The most likely cause is the" \
+                     "reverse proxy forwarding somewhere other than" \
+                     "127.0.0.1:8000, which this release's loopback-only port" \
+                     "binding no longer serves."
+                rollback
+              fi
+            else
+              echo "==> public gate skipped (PUBLIC_HEALTH_URL not set)"
             fi
 
             # ---- 7. Success ----------------------------------------------
