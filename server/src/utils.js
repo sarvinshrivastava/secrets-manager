@@ -114,3 +114,30 @@ export function scopeAllowsFolder(scopeCsv, folder) {
   if (allowed.includes("*")) return true;
   return allowed.includes(folder);
 }
+
+// Parse a scope CSV into { all, set }. `all` is true for the `*` wildcard (or an
+// empty/absent scope, which historically means "all folders" — see
+// scopeAllowsFolder). Otherwise `set` holds the explicit folder names.
+function parseScope(scopeCsv) {
+  if (!scopeCsv || scopeCsv === "*") return { all: true, set: new Set() };
+  const folders = scopeCsv
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (folders.includes("*")) return { all: true, set: new Set() };
+  return { all: false, set: new Set(folders) };
+}
+
+// Subset test for the scoping admin model: is `childScopeCsv` fully contained in
+// `parentScopeCsv`? A `*` parent contains anything; a `*` child is contained
+// only by a `*` parent; otherwise every child folder must appear in the parent.
+export function scopeIsSubset(childScopeCsv, parentScopeCsv) {
+  const parent = parseScope(parentScopeCsv);
+  if (parent.all) return true;
+  const child = parseScope(childScopeCsv);
+  if (child.all) return false;
+  for (const folder of child.set) {
+    if (!parent.set.has(folder)) return false;
+  }
+  return true;
+}

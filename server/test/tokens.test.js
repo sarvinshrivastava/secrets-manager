@@ -108,6 +108,200 @@ describe("POST /api/tokens", () => {
   });
 });
 
+describe("POST /api/tokens — scoping subset model", () => {
+  it("admin may grant any scope", async () => {
+    const res = await request(ctx.app)
+      .post("/api/tokens")
+      .set(bearer(write))
+      .send({ name: "svc", role: "read", scope: ["A", "B"] });
+    expect(res.status).toBe(201);
+    expect(res.body.scope).toBe("A,B");
+  });
+
+  it("a scoped caller may grant a subset (201)", async () => {
+    const scoped = addToken(ctx.db, {
+      name: "team",
+      role: "write",
+      scope: "A,B",
+    });
+    const res = await request(ctx.app)
+      .post("/api/tokens")
+      .set(bearer(scoped))
+      .send({ name: "svc", role: "read", scope: ["A"] });
+    expect(res.status).toBe(201);
+    expect(res.body.scope).toBe("A");
+  });
+
+  it("a scoped caller cannot grant a superset (403)", async () => {
+    const scoped = addToken(ctx.db, {
+      name: "team",
+      role: "write",
+      scope: "A",
+    });
+    const res = await request(ctx.app)
+      .post("/api/tokens")
+      .set(bearer(scoped))
+      .send({ name: "svc", role: "read", scope: ["A", "B"] });
+    expect(res.status).toBe(403);
+    expect(res.body.detail).toBe("Cannot grant scope beyond your own");
+  });
+
+  it("a scoped caller cannot grant a sibling folder (403)", async () => {
+    const scoped = addToken(ctx.db, {
+      name: "team",
+      role: "write",
+      scope: "A",
+    });
+    const res = await request(ctx.app)
+      .post("/api/tokens")
+      .set(bearer(scoped))
+      .send({ name: "svc", role: "read", scope: ["B"] });
+    expect(res.status).toBe(403);
+  });
+
+  it("a scoped caller cannot grant `*` (403)", async () => {
+    const scoped = addToken(ctx.db, {
+      name: "team",
+      role: "write",
+      scope: "A",
+    });
+    const res = await request(ctx.app)
+      .post("/api/tokens")
+      .set(bearer(scoped))
+      .send({ name: "svc", role: "read", scope: ["*"] });
+    expect(res.status).toBe(403);
+  });
+
+  it("an unscoped request defaults to the caller's OWN scope (not `*`)", async () => {
+    const scoped = addToken(ctx.db, {
+      name: "team",
+      role: "write",
+      scope: "A,B",
+    });
+    const res = await request(ctx.app)
+      .post("/api/tokens")
+      .set(bearer(scoped))
+      .send({ name: "svc", role: "read" });
+    expect(res.status).toBe(201);
+    expect(res.body.scope).toBe("A,B");
+  });
+
+  it("an unscoped admin request still defaults to `*`", async () => {
+    const res = await request(ctx.app)
+      .post("/api/tokens")
+      .set(bearer(write))
+      .send({ name: "svc", role: "read" });
+    expect(res.status).toBe(201);
+    expect(res.body.scope).toBe("*");
+  });
+});
+
+describe("rotate / revoke — target scope model", () => {
+  it("a scoped token cannot rotate admin (scope `*` ⊄ scoped) → 403", async () => {
+    const scoped = addToken(ctx.db, {
+      name: "team",
+      role: "write",
+      scope: "A",
+    });
+    const res = await request(ctx.app)
+      .post("/api/tokens/admin/rotate")
+      .set(bearer(scoped));
+    expect(res.status).toBe(403);
+  });
+
+  it("a scoped token cannot revoke admin → 403", async () => {
+    const scoped = addToken(ctx.db, {
+      name: "team",
+      role: "write",
+      scope: "A",
+    });
+    const res = await request(ctx.app)
+      .delete("/api/tokens/admin")
+      .set(bearer(scoped));
+    expect(res.status).toBe(403);
+  });
+
+  it("admin can rotate a scoped token (200)", async () => {
+    addToken(ctx.db, { name: "svc", role: "read", scope: "A" });
+    const res = await request(ctx.app)
+      .post("/api/tokens/svc/rotate")
+      .set(bearer(write));
+    expect(res.status).toBe(200);
+    expect(res.body.token.startsWith("svc.")).toBe(true);
+  });
+
+  it("a scoped token can rotate a token within its scope (200)", async () => {
+    const scoped = addToken(ctx.db, {
+      name: "team",
+      role: "write",
+      scope: "A,B",
+    });
+    addToken(ctx.db, { name: "svc", role: "read", scope: "A" });
+    const res = await request(ctx.app)
+      .post("/api/tokens/svc/rotate")
+      .set(bearer(scoped));
+    expect(res.status).toBe(200);
+  });
+});
+
+describe("GET /api/tokens — scope-filtered list", () => {
+  it("admin sees all tokens", async () => {
+    addToken(ctx.db, { name: "a-svc", role: "read", scope: "A" });
+    addToken(ctx.db, { name: "b-svc", role: "read", scope: "B" });
+    const res = await request(ctx.app).get("/api/tokens").set(bearer(write));
+    const names = res.body.tokens.map((t) => t.name);
+    expect(names).toEqual(expect.arrayContaining(["admin", "a-svc", "b-svc"]));
+  });
+
+  it("a scoped caller only sees tokens within its scope", async () => {
+    const scoped = addToken(ctx.db, {
+      name: "team",
+      role: "write",
+      scope: "A",
+    });
+    addToken(ctx.db, { name: "a-svc", role: "read", scope: "A" });
+    addToken(ctx.db, { name: "b-svc", role: "read", scope: "B" });
+    const res = await request(ctx.app).get("/api/tokens").set(bearer(scoped));
+    const names = res.body.tokens.map((t) => t.name).sort();
+    // Sees itself + the A-scoped token; NOT admin (`*`) nor the B-scoped token.
+    expect(names).toEqual(["a-svc", "team"]);
+  });
+});
+
+describe("POST /api/tokens/:name/rotate — always server-random", () => {
+  it("ignores a caller-supplied token; old token dies, new works", async () => {
+    const created = await request(ctx.app)
+      .post("/api/tokens")
+      .set(bearer(write))
+      .send({ name: "svc", role: "read" });
+    const oldToken = created.body.token;
+
+    const customHex = "a".repeat(64);
+    const rot = await request(ctx.app)
+      .post("/api/tokens/svc/rotate")
+      .set(bearer(write))
+      .send({ token: customHex });
+    expect(rot.status).toBe(200);
+    const newToken = rot.body.token;
+
+    // The custom hex must NOT have been used as the secret.
+    expect(newToken).not.toBe(`svc.${customHex}`);
+    expect(newToken.startsWith("svc.")).toBe(true);
+    expect(newToken).not.toBe(oldToken);
+
+    // Old token is now invalid; new token authenticates.
+    const oldRes = await request(ctx.app)
+      .get("/api/auth/me")
+      .set(bearer(oldToken));
+    expect(oldRes.status).toBe(401);
+
+    const newRes = await request(ctx.app)
+      .get("/api/auth/me")
+      .set(bearer(newToken));
+    expect(newRes.status).toBe(200);
+  });
+});
+
 describe("countWriteTokens excludes expired write tokens", () => {
   it("an expired write token does not keep the vault healthy", () => {
     const c = makeApp();

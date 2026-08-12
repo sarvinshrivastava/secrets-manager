@@ -4,6 +4,7 @@ import {
   parseEnvValue,
   formatEnvValue,
   scopeAllowsFolder,
+  scopeIsSubset,
   parseNamedToken,
   isValidFolderName,
 } from "../src/utils.js";
@@ -83,6 +84,36 @@ describe("scopeAllowsFolder", () => {
   it("CSV scope allows only listed folders", () => {
     expect(scopeAllowsFolder("A,B", "A")).toBe(true);
     expect(scopeAllowsFolder("A,B", "C")).toBe(false);
+  });
+});
+
+describe("scopeIsSubset", () => {
+  it("a `*` parent contains anything", () => {
+    expect(scopeIsSubset("A", "*")).toBe(true);
+    expect(scopeIsSubset("A,B", "*")).toBe(true);
+    expect(scopeIsSubset("*", "*")).toBe(true);
+    expect(scopeIsSubset(null, "*")).toBe(true);
+  });
+
+  it("a `*` child is contained only by a `*` parent", () => {
+    expect(scopeIsSubset("*", "A")).toBe(false);
+    expect(scopeIsSubset("*", "A,B")).toBe(false);
+    // An unscoped (all-folders) child is likewise not a subset of a scoped parent.
+    expect(scopeIsSubset(null, "A")).toBe(false);
+  });
+
+  it("explicit folder subset holds", () => {
+    expect(scopeIsSubset("A", "A,B")).toBe(true);
+    expect(scopeIsSubset("A,B", "A,B")).toBe(true);
+    expect(scopeIsSubset("A", "A")).toBe(true);
+  });
+
+  it("a superset child is rejected", () => {
+    expect(scopeIsSubset("A,B", "A")).toBe(false);
+  });
+
+  it("a sibling child is rejected", () => {
+    expect(scopeIsSubset("B", "A")).toBe(false);
   });
 });
 

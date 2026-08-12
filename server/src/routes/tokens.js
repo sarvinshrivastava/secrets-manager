@@ -1,6 +1,10 @@
 import crypto from "node:crypto";
 import { Router } from "express";
-import { isValidFolderName, TOKEN_NAME_REGEX } from "../utils.js";
+import {
+  isValidFolderName,
+  scopeIsSubset,
+  TOKEN_NAME_REGEX,
+} from "../utils.js";
 
 // Clamp token lifetime — a huge expires_in_seconds (e.g. 1e20) overflows Date
 // arithmetic and toISOString() throws → 500. 10 years is a sane ceiling.
@@ -34,17 +38,22 @@ export function createTokensRouter(
 ) {
   const router = Router();
 
-  // GET /api/tokens — list all tokens (no raw values)
-  router.get("/", requireAuth, requireWriteAccess, (_req, res) => {
-    const tokens = db.listTokens().map((row) => ({
-      name: row.name,
-      role: row.role,
-      scope: row.scope || "*",
-      created_at: row.created_at,
-      updated_at: row.updated_at,
-      expires_at: row.expires_at || null,
-      revoked_at: row.revoked_at || null,
-    }));
+  // GET /api/tokens — list tokens (no raw values). Filtered to tokens whose
+  // scope is a subset of the caller's — a folder-scoped admin never sees tokens
+  // (e.g. the global `admin`) that outrank it.
+  router.get("/", requireAuth, requireWriteAccess, (req, res) => {
+    const tokens = db
+      .listTokens()
+      .filter((row) => scopeIsSubset(row.scope || "*", req.auth.scope || "*"))
+      .map((row) => ({
+        name: row.name,
+        role: row.role,
+        scope: row.scope || "*",
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+        expires_at: row.expires_at || null,
+        revoked_at: row.revoked_at || null,
+      }));
     res.json({ tokens });
   });
 
@@ -63,9 +72,25 @@ export function createTokensRouter(
       return res.status(400).json({ detail: "Role must be 'read' or 'write'" });
     }
 
-    const scopeResult = normalizeScope(scope);
-    if (scopeResult.error) {
-      return res.status(400).json({ detail: scopeResult.error });
+    const callerScope = req.auth.scope || "*";
+
+    // Default: admin (`*`) → `*`, a scoped caller → its OWN scope (never widen an
+    // unscoped request to `*` for a non-admin).
+    let scopeResult;
+    if (scope === undefined || scope === null) {
+      scopeResult = { csv: callerScope };
+    } else {
+      scopeResult = normalizeScope(scope);
+      if (scopeResult.error) {
+        return res.status(400).json({ detail: scopeResult.error });
+      }
+    }
+
+    // Subset model: a caller may only grant a scope contained in its own.
+    if (!scopeIsSubset(scopeResult.csv, callerScope)) {
+      return res
+        .status(403)
+        .json({ detail: "Cannot grant scope beyond your own" });
     }
 
     const existing = db.getTokenByName(name);
@@ -130,6 +155,13 @@ export function createTokensRouter(
         .json({ detail: `Token '${name}' is already revoked` });
     }
 
+    // Subset model: may only manage a token whose scope ⊆ the caller's scope.
+    if (!scopeIsSubset(row.scope || "*", req.auth.scope || "*")) {
+      return res
+        .status(403)
+        .json({ detail: "Cannot manage a token beyond your scope" });
+    }
+
     // Prevent revoking the last active write token
     const activeWriteTokens = db
       .listTokens()
@@ -158,11 +190,11 @@ export function createTokensRouter(
     res.json({ status: "revoked", name });
   });
 
-  // POST /api/tokens/:name/rotate — in-place rotation (new hash, clear revoked_at)
-  // Optional: { "token": "custom_hex_token_value" } — if provided and valid, uses custom token instead of generating random
+  // POST /api/tokens/:name/rotate — in-place rotation (new hash, clear revoked_at).
+  // The new secret is ALWAYS server-random; any caller-supplied `token` in the
+  // body is ignored (owner decision — no caller-chosen token material).
   router.post("/:name/rotate", requireAuth, requireWriteAccess, (req, res) => {
     const { name } = req.params;
-    const { token: customToken } = req.body || {};
 
     const row = db.getTokenByName(name);
     if (!row) {
@@ -174,32 +206,17 @@ export function createTokensRouter(
         .json({ detail: `Token '${name}' is revoked and cannot be rotated` });
     }
 
-    let rawToken;
-
-    // If custom token provided, validate and use it
-    if (customToken) {
-      // Validate: must be hex string, 64+ characters (32+ bytes when decoded)
-      if (typeof customToken !== "string") {
-        return res.status(400).json({ detail: "Token must be a string" });
-      }
-      if (!/^[0-9a-fA-F]+$/.test(customToken)) {
-        return res
-          .status(400)
-          .json({ detail: "Token must be a hexadecimal string" });
-      }
-      if (customToken.length < 64) {
-        return res.status(400).json({
-          detail: "Token must be at least 64 hexadecimal characters (32 bytes)",
-        });
-      }
-      rawToken = customToken.toLowerCase();
-    } else {
-      // Generate random token
-      rawToken = crypto.randomBytes(32).toString("hex");
+    // Subset model: may only manage a token whose scope ⊆ the caller's scope.
+    if (!scopeIsSubset(row.scope || "*", req.auth.scope || "*")) {
+      return res
+        .status(403)
+        .json({ detail: "Cannot manage a token beyond your scope" });
     }
 
-    // rawToken is the SECRET half; store its hash and hand the caller the full
-    // `<name>.<secret>` wire token so it verifies via the O(1) named path.
+    // Always generate a fresh server-random secret. rawToken is the SECRET half;
+    // store its hash and hand the caller the full `<name>.<secret>` wire token so
+    // it verifies via the O(1) named path.
+    const rawToken = crypto.randomBytes(32).toString("hex");
     const hashed = cryptoManager.hashToken(rawToken);
     db.rotateToken(name, hashed.salt, hashed.digest);
 
@@ -207,7 +224,7 @@ export function createTokensRouter(
       action: "token_rotated",
       status: "ok",
       tokenName: req.auth.name,
-      details: `rotated=${name}${customToken ? " (custom)" : " (random)"}`,
+      details: `rotated=${name}`,
     });
 
     res.json({

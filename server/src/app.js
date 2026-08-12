@@ -39,9 +39,15 @@ export function createApp(settings, db, crypto, rateLimiter) {
   app.use(securityHeaders);
   app.use(globalRateLimit);
 
-  // Health check (no auth)
+  // Health check (no auth). Probes the DB with a cheap `SELECT 1` so a broken /
+  // closed database surfaces as 503 instead of a falsely-healthy 200.
   app.get("/healthz", (_req, res) => {
-    res.json({ status: "ok" });
+    try {
+      db.db.prepare("SELECT 1").get();
+      res.json({ status: "ok" });
+    } catch {
+      res.status(503).json({ status: "error" });
+    }
   });
 
   // Auth identity

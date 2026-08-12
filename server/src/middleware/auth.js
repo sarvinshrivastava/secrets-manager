@@ -1,9 +1,16 @@
+import nodeCrypto from "node:crypto";
 import { extractToken, getClientIp, parseNamedToken } from "../utils.js";
 
 // Cap the legacy bare-token scan so an invalid bare token can never fan out into
 // an unbounded number of 32ms PBKDF2 hashes (event-loop DoS). Named tokens
 // (`<name>.<secret>`) never hit this path — they verify exactly one hash.
 const MAX_SCAN_TOKENS = 50;
+
+// Dummy PBKDF2 material. A named token whose NAME does not resolve spends ONE
+// hash against these throwaway values so its latency matches a name-that-resolves
+// -but-wrong-secret — closing the token-name enumeration timing oracle.
+const DUMMY_SALT = nodeCrypto.randomBytes(16);
+const DUMMY_HASH = nodeCrypto.randomBytes(32);
 
 // Audit-detail label for a failed auth, keyed by failure reason.
 const AUTH_FAIL_DETAIL = { revoked: "Token revoked", expired: "Token expired" };
@@ -68,24 +75,32 @@ export function createAuthMiddleware(db, crypto, trustedProxyIps) {
   }
 
   // Authenticate a raw wire token.
-  //   Fast path: `<name>.<secret>` → single getTokenByName + one PBKDF2 (O(1)).
-  //   Fallback: bare token → capped scan (back-compat for legacy/bootstrap tokens).
+  //   Named path: `<name>.<secret>` → single getTokenByName + exactly one PBKDF2
+  //     (O(1)). A missing name spends one DUMMY hash so timing is constant; a
+  //     wrong secret spends the real hash. Neither ever falls back to the scan —
+  //     that would reintroduce O(tokens) cost AND a name-existence timing oracle.
+  //   Scan path: reserved strictly for tokens with NO `.` (legacy/bootstrap).
+  //
+  // NOTE: raw/bootstrap tokens MUST NOT contain a `.` — a bare token whose prefix
+  // matches the token-name pattern (`<name>.<secret>`) is now treated as NAMED
+  // and will not authenticate via the scan.
   async function authenticate(token) {
     const named = parseNamedToken(token);
     if (named) {
       const row = db.getTokenByName(named.name);
-      if (row) {
-        if (
-          await crypto.verifyTokenAsync(named.secret, row.salt, row.token_hash)
-        ) {
-          return evaluate(row);
-        }
-        // Name resolved but secret is wrong — a forged/stale token. Do NOT fall
-        // back to the scan (that would reintroduce the O(tokens) cost).
-        return { ok: false, reason: "invalid", detail: "Invalid token" };
+      if (
+        row &&
+        (await crypto.verifyTokenAsync(named.secret, row.salt, row.token_hash))
+      ) {
+        return evaluate(row);
       }
-      // Name did not resolve — could be a bare token that happens to contain a
-      // dot; fall through to the capped scan against the full original token.
+      // Name unresolved OR secret wrong. If the name never resolved we did NOT
+      // spend a real hash above (short-circuit), so burn one dummy PBKDF2 to keep
+      // the response time indistinguishable from the wrong-secret case.
+      if (!row) {
+        await crypto.verifyTokenAsync(named.secret, DUMMY_SALT, DUMMY_HASH);
+      }
+      return { ok: false, reason: "invalid", detail: "Invalid token" };
     }
     return scanTokens(token);
   }

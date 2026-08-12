@@ -49,6 +49,19 @@ export function createFoldersRouter(
         .json({ detail: `Folder '${RESERVED_FOLDER}' is reserved` });
     }
 
+    // The caller's scope must cover BOTH endpoints of the rename — otherwise a
+    // folder-scoped token could move keys into or out of a folder it can't see.
+    if (
+      !scopeAllowsFolder(req.auth.scope, source) ||
+      !scopeAllowsFolder(req.auth.scope, target)
+    ) {
+      return res
+        .status(403)
+        .json({
+          detail: "Token not scoped for both source and target folders",
+        });
+    }
+
     // A key present in BOTH folders would violate UNIQUE(folder, key) and the
     // bulk UPDATE would throw SQLITE_CONSTRAINT (→ 500). Detect and 409 first.
     const collisions = db.folderKeyCollisions(source, target);

@@ -8,6 +8,9 @@ import {
 import { RateLimiter } from "../rate-limit.js";
 
 const MAX_VALUE_BYTES = 32768;
+// Cap bulk batch size so a single request can't queue an unbounded number of
+// encrypt+insert operations inside one transaction (memory / event-loop DoS).
+const MAX_BULK_ENTRIES = 500;
 
 function normalizeFolder(folder) {
   return typeof folder === "string" && folder.trim().length > 0
@@ -59,7 +62,10 @@ export function createSecretsRouter(
       });
     }
 
-    if (typeof value !== "string" || value.length > MAX_VALUE_BYTES) {
+    if (
+      typeof value !== "string" ||
+      Buffer.byteLength(value, "utf8") > MAX_VALUE_BYTES
+    ) {
       return res.status(400).json({ detail: "Invalid value" });
     }
 
@@ -113,6 +119,11 @@ export function createSecretsRouter(
     if (!Array.isArray(secrets)) {
       return res.status(400).json({ detail: "secrets must be an array" });
     }
+    if (secrets.length > MAX_BULK_ENTRIES) {
+      return res.status(400).json({
+        detail: `Too many entries: max ${MAX_BULK_ENTRIES} per bulk request`,
+      });
+    }
     const overwriteSet = new Set(Array.isArray(overwrite) ? overwrite : []);
 
     const added = [];
@@ -139,7 +150,10 @@ export function createSecretsRouter(
           });
           continue;
         }
-        if (typeof value !== "string" || value.length > MAX_VALUE_BYTES) {
+        if (
+          typeof value !== "string" ||
+          Buffer.byteLength(value, "utf8") > MAX_VALUE_BYTES
+        ) {
           invalid.push({ key, reason: "invalid value" });
           continue;
         }

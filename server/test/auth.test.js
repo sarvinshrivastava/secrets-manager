@@ -109,6 +109,64 @@ describe("auth middleware", () => {
   });
 });
 
+describe("named-miss vs bare-scan (timing oracle fix)", () => {
+  it("a bare token with NO dot still authenticates via the scan", async () => {
+    const raw = addBareToken(ctx.db, { name: "boot", role: "write" });
+    expect(raw.includes(".")).toBe(false);
+    const res = await request(ctx.app).get("/api/auth/me").set(bearer(raw));
+    expect(res.status).toBe(200);
+    expect(res.body.token_name).toBe("boot");
+  });
+
+  it("a well-formed named token with an unknown name → 401 (no scan fallback)", async () => {
+    addToken(ctx.db, { name: "reader", role: "read" });
+    const res = await request(ctx.app)
+      .get("/api/auth/me")
+      .set(bearer("nosuchname.deadbeefsecret"));
+    expect(res.status).toBe(401);
+    expect(res.body.detail).toBe("Invalid token");
+  });
+
+  it("a bare token that CONTAINS a dot is treated as named and will not scan", async () => {
+    // Documented caveat: raw/bootstrap tokens must not contain a '.'. Stored under
+    // name 'dotted', but the raw wire value 'pfx.suffix' parses as named → looks up
+    // name 'pfx' (absent) → 401, never reaching the scan that would have matched.
+    const raw = addBareToken(ctx.db, {
+      name: "dotted",
+      role: "write",
+      raw: "pfx.suffixvalue0123456789",
+    });
+    expect(raw.includes(".")).toBe(true);
+    const res = await request(ctx.app).get("/api/auth/me").set(bearer(raw));
+    expect(res.status).toBe(401);
+  });
+
+  it("caps the bare-token scan at 50: token past the cap → 401, within → 200", async () => {
+    const tokens = [];
+    for (let i = 0; i < 51; i += 1) {
+      const name = `bare${String(i).padStart(2, "0")}`;
+      tokens.push(
+        addBareToken(ctx.db, {
+          name,
+          role: "write",
+          raw: `scan-${name}-secretvalue0123456789`,
+        }),
+      );
+    }
+    // First inserted → within the first 50 scanned → authenticates.
+    const within = await request(ctx.app)
+      .get("/api/auth/me")
+      .set(bearer(tokens[0]));
+    expect(within.status).toBe(200);
+
+    // 51st inserted → beyond the scan cap → never verified → 401.
+    const past = await request(ctx.app)
+      .get("/api/auth/me")
+      .set(bearer(tokens[50]));
+    expect(past.status).toBe(401);
+  }, 30000);
+});
+
 describe("per-folder token scope", () => {
   it("denies reading a folder outside scope (403)", async () => {
     seedSecret(ctx.db, "FolderB", "SECRET_B", "b-value");
