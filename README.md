@@ -70,7 +70,22 @@ The public fetch route is folder-scoped: `GET /api/secrets/:folder/:key`.
 - **Per-folder scope:** a token carries a `scope` — either `*` (all folders) or a
   list of folders it may read. This limits blast radius: a token scoped to
   `ServiceA` cannot read `ServiceB`'s secrets or the `Infra` folder. Bootstrap
-  tokens are `*`-scoped.
+  tokens are `*`-scoped. A request for a folder outside the token's scope is
+  rejected with `403 {"detail":"Token not scoped for folder 'X'"}`.
+
+### Admin capability
+
+Token/folder management is gated on scope, not just role:
+
+- Only a **`*`-scoped write token** is an admin — it may manage other tokens
+  (create / rotate / revoke) and rename folders. A folder-scoped write token can
+  read/write secrets in its folders but cannot administer tokens or folders.
+- A token may only **grant a scope that is a subset of its own**. A token scoped
+  to `["ServiceA","ServiceB"]` can mint a token scoped to `["ServiceA"]`, never a
+  `*`-scoped or broader-scoped one. Only a `*`-scoped admin can mint another
+  `*`-scoped token.
+- `POST /api/tokens/:name/rotate` always returns a fresh **server-generated
+  random** token value — there is no caller-supplied value.
 
 ## Configuration
 
@@ -219,14 +234,16 @@ malformed keys/values are reported in `invalid` as `{ key, reason }` objects.
 | `GET` | `/api/folders` | read | List distinct folders (derived from the DB) |
 | `POST` | `/api/folders/rename` | write | `{ "from": "...", "to": "..." }` → moves all secrets |
 
-**Tokens** (write role required for all)
+**Tokens** — write role required, and managing tokens (create/rotate/revoke) or
+renaming folders requires a **`*`-scoped** (admin) token. A token may only grant
+a `scope` that is a subset of its own.
 
 | Method | Path | Notes |
 |---|---|---|
 | `GET` | `/api/tokens` | List tokens (name, role, timestamps, `expires_at`, `revoked_at`) — never raw values |
-| `POST` | `/api/tokens` | Create: `{ "name", "role":"read\|write", "expires_in_seconds"? }` → returns `token` once (`201`) |
+| `POST` | `/api/tokens` | Create: `{ "name", "role":"read\|write", "scope"?, "expires_in_seconds"? }` → returns `token` once (`201`). `scope` must be a subset of the caller's scope |
 | `DELETE` | `/api/tokens/:name` | Revoke (tombstone). Refuses to revoke the last active write token |
-| `POST` | `/api/tokens/:name/rotate` | New value for existing token; optional `{ "token": "<64+ hex>" }` to set a custom value |
+| `POST` | `/api/tokens/:name/rotate` | Rotate to a new **server-generated random** value — returned once. No caller-supplied value accepted |
 
 **Bulk export / import**
 

@@ -36,6 +36,14 @@ radius to a single service.
   per-service token can no longer read the SSH key or any other service's
   secrets.
 
+> **Admin model (see README "Admin capability").** `SM_INFRA_TOKEN` and the
+> per-service tokens are **read-only and folder-scoped** — non-admin by design.
+> They cannot manage tokens or rename folders; only a `*`-scoped write token
+> (the vault admin) can mint/rotate/revoke tokens and rename folders. Mint these
+> scoped tokens with the admin token, and remember a token may only grant a
+> scope that is a subset of its own — so a folder-scoped token can never mint a
+> broader one. Keep the `*`-scoped admin token OUT of every service repo.
+
 Fetch example after the split (folder-scoped path already exists):
 ```
 GET /api/secrets/Infra/VPS_SSH_KEY      # SM_INFRA_TOKEN only

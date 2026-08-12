@@ -30,6 +30,23 @@ production incidents.
    `GET /api/secrets/:folder/:key` and `/healthz` to the internet. Block every
    other `/api/*` path at the proxy (see PROPOSALS.md route map).
 
+> **DANGER — do NOT publicly proxy the admin UI.** The SPA now serves at `/`
+> (it used to live under `/secret-manager/`). A careless reverse-proxy catch-all
+> — `location / { proxy_pass http://127.0.0.1:8000; }` — re-exposes the entire
+> internal API (`/api/tokens`, `/api/exports`, `/api/import`, `/api/secrets`
+> list, `/api/folders`, `/api/audit-logs`) straight to the internet, defeating
+> the whole point of the route allowlist. Rules:
+> - The public vhost must proxy ONLY `GET /api/secrets/:folder/:key` and
+>   `/healthz`. Use explicit `location` matches for those two paths — never a
+>   bare catch-all `location /`.
+> - Reach the admin UI at `/` via an **SSH tunnel** to `127.0.0.1:8000`
+>   (`ssh -L 8000:127.0.0.1:8000 <host>`, then open `http://localhost:8000/`),
+>   NOT through the public proxy.
+> - If you must serve the UI over HTTP, put it on a **separate,
+>   independently-authenticated, path-scoped vhost** (e.g. its own hostname
+>   behind Basic-Auth / mTLS / an allowlisted source IP) that likewise does not
+>   use a bare catch-all `location /`.
+
 > The compose file uses a **named volume**, so there is no `./data` ownership
 > step to do. If you deliberately switch to a bind mount (`./data:/app/data`),
 > you MUST pre-create it writable by uid 1000 first, or the container
