@@ -364,6 +364,7 @@ export default function App() {
         onToggleTheme={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
         onAddSingle={() => setAddSingleOpen(true)}
         onAddBulk={() => setBulkOpen(true)}
+        dialogOpen={addSingleOpen || bulkOpen || Boolean(deleteTarget)}
       />
 
       <main className="mx-auto max-w-6xl px-4 py-5">
