@@ -306,3 +306,83 @@ describe("App folder union", () => {
     expect(screen.getAllByText("UsedOnly").length).toBeGreaterThan(0);
   });
 });
+
+describe("App ⌘K search shortcut", () => {
+  it("focuses and selects the search box on Cmd+K", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findAllByText("API_KEY");
+
+    const search = screen.getByLabelText("Search keys");
+    await user.type(search, "API");
+    search.blur();
+    expect(search).not.toHaveFocus();
+
+    await user.keyboard("{Meta>}k{/Meta}");
+
+    expect(search).toHaveFocus();
+    // Selected, so the next keystroke replaces the old term instead of appending.
+    expect(search.selectionStart).toBe(0);
+    expect(search.selectionEnd).toBe("API".length);
+  });
+
+  it("focuses the search box on Ctrl+K for non-mac keyboards", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findAllByText("API_KEY");
+
+    const search = screen.getByLabelText("Search keys");
+    search.blur();
+
+    await user.keyboard("{Control>}k{/Control}");
+
+    expect(search).toHaveFocus();
+  });
+
+  it("preventDefaults the chord so the browser address bar does not claim it", async () => {
+    render(<App />);
+    await screen.findAllByText("API_KEY");
+
+    const event = new KeyboardEvent("keydown", {
+      key: "k",
+      metaKey: true,
+      cancelable: true,
+      bubbles: true,
+    });
+    act(() => {
+      window.dispatchEvent(event);
+    });
+
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it("ignores the chord while a modal is open", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findAllByText("API_KEY");
+
+    await user.click(screen.getByRole("button", { name: "Add" }));
+    // The dialog's labels are not associated with their inputs; target by placeholder.
+    const keyField = await screen.findByPlaceholderText("DATABASE_URL");
+    keyField.focus();
+
+    await user.keyboard("{Meta>}k{/Meta}");
+
+    // Focus stays inside the dialog rather than jumping behind the overlay.
+    expect(keyField).toHaveFocus();
+    expect(screen.getByLabelText("Search keys")).not.toHaveFocus();
+  });
+
+  it("leaves a bare k keypress alone", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findAllByText("API_KEY");
+
+    const search = screen.getByLabelText("Search keys");
+    search.blur();
+
+    await user.keyboard("k");
+
+    expect(search).not.toHaveFocus();
+  });
+});

@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { Menu } from "@headlessui/react";
 import {
   MdSearch,
@@ -36,8 +37,27 @@ export default function TopBar({
   onToggleTheme,
   onAddSingle,
   onAddBulk,
+  dialogOpen,
 }) {
   const canWrite = role === "write";
+  const searchRef = useRef(null);
+
+  // Cmd/Ctrl+K focuses the search box. preventDefault is required: browsers
+  // bind the same chord to their own address-bar search. Skipped while a modal
+  // is open, otherwise focus jumps behind the overlay.
+  useEffect(() => {
+    if (dialogOpen) return undefined;
+    function onKey(event) {
+      if (!event.metaKey && !event.ctrlKey) return;
+      if (event.altKey) return;
+      if (event.key?.toLowerCase() !== "k") return;
+      event.preventDefault();
+      searchRef.current?.focus();
+      searchRef.current?.select();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [dialogOpen]);
 
   return (
     <header className="sticky top-0 z-20 border-b border-line bg-surface">
@@ -67,6 +87,7 @@ export default function TopBar({
             className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-faint"
           />
           <input
+            ref={searchRef}
             type="text"
             value={searchTerm}
             onChange={(event) => onSearchChange(event.target.value)}
