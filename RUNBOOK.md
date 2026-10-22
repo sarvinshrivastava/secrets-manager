@@ -145,6 +145,8 @@ There are three backup paths. They are independent: any one of them is enough to
   The log line is `backup <slot> <trigger> attempt=<n> success|failed code=…`.
 - **Off-site runs only in production** (`NODE_ENV=production`, set by the image). A dev box
   logs `backup off-site disabled: nonprod` and never uploads or pages.
+  `SECRET_MANAGER_BACKUP_ALLOW_NONPROD=1` lifts that gate for a test box only; never set it
+  on a machine holding the production repo, PAT or push URL.
 - **Local files are plaintext SQLite** (secret values inside are AES-256-GCM under the
   master key, as in the live DB), so an on-box restore (§4) needs no age key.
 
@@ -205,13 +207,17 @@ restored DB opens but no secret value decrypts.
 Repeat steps 2–3 and 6 alone as a **decrypt test** (suggested quarterly): pass = `ok` and
 both counts equal the slot's audit row. The decrypt test does not need the master key, so
 **check the stored master key too while the VPS still exists** (own terminal). It compares
-an HMAC under a throwaway random nonce, so the printed values are useless for guessing the
-key even if it is a human-chosen passphrase; the two lines must be equal:
+an HMAC under a throwaway random nonce: the printed hex is useless for guessing the key
+without the nonce, which lives only in this terminal (and, for a moment, in the VPS process
+list, which only root can read, and root already has `.env`). The VPS side reads the value
+the container actually uses (`printenv`, after compose has stripped any quotes). `-r` and
+`cut` make LibreSSL (macOS) and OpenSSL 3 (VPS) print the same bare hex; the two lines must
+be equal:
 ```sh
 N=$(openssl rand -hex 32)
-ssh vps "grep '^SECRET_MANAGER_MASTER_KEY=' /root/secrets-manager/.env | cut -d= -f2- | tr -d '\n' | openssl dgst -sha256 -hmac $N"
+ssh vps "docker exec secret-manager printenv SECRET_MANAGER_MASTER_KEY | tr -d '\n' | openssl dgst -sha256 -hmac $N -r | cut -d' ' -f1"
 # copy the master key from your store to the clipboard, then:
-pbpaste | tr -d '\n' | openssl dgst -sha256 -hmac "$N"; pbcopy < /dev/null; unset N
+pbpaste | tr -d "\n" | openssl dgst -sha256 -hmac "$N" -r | cut -d' ' -f1; pbcopy < /dev/null; unset N
 ```
 
 ### 3b. Key, token and monitor handling

@@ -80,8 +80,13 @@ export async function discardBody(res) {
   }
 }
 
-function statusError(res, op) {
+// `auth: false` = the signed storage host behind the download redirect: its
+// 401/403 means an expired or refused URL, not a PAT problem.
+function statusError(res, op, auth = true) {
   const s = res.status;
+  if (!auth) {
+    return new BackupError(s >= 500 ? "github_5xx" : "github_http", { status: s });
+  }
   const h = (k) => res.headers.get(k);
   let code;
   if (s === 429 || (s === 403 && (h("x-ratelimit-remaining") === "0" || h("retry-after")))) {
@@ -131,7 +136,7 @@ export function createGithubClient({
   // `readBody: false` for the unauthenticated redirect hop: its body could
   // echo the signed URL, so only the status is logged.
   async function failWith(res, op, { readBody = true } = {}) {
-    const err = statusError(res, op);
+    const err = statusError(res, op, readBody);
     let message = "";
     if (readBody) {
       try {

@@ -220,12 +220,12 @@ describe("github client", () => {
     await expect(c.listAssets(42)).rejects.toMatchObject({ code: "github_http" });
   });
 
-  it("logs only the status when the unauthenticated redirect hop fails", async () => {
+  it("logs only the status when the unauthenticated redirect hop fails (403 is not github_auth)", async () => {
     const { c, lines } = client((url) => {
       if (url === LOCATION) return jsonRes({ message: `denied ${LOCATION}` }, 403);
       return new Response(null, { status: 302, headers: { location: LOCATION } });
     });
-    await expect(c.downloadAssetSha256(9)).rejects.toMatchObject({ code: "github_auth" });
+    await expect(c.downloadAssetSha256(9)).rejects.toMatchObject({ code: "github_http", status: 403 });
     expect(lines.join("\n")).toContain("downloadAsset failed: 403");
     expect(lines.join("\n")).not.toContain("denied");
     expectClean(lines);

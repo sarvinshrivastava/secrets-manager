@@ -493,6 +493,7 @@ describe("runSlot", () => {
     });
     const res = await settle(h.runner.trigger(SLOT, "scheduled"));
     expect(res).toMatchObject({ status: "error", code: "db_too_large", final: true });
+    expect(h.audits[0].details).toMatchObject({ stage: "offsite", notes: ["large_db"] });
     expect(h.server.calls).toEqual(["KUMA down"]);
     expect(h.server.kuma).toEqual([{ status: "down", msg: "db_too_large" }]);
   });
@@ -540,6 +541,25 @@ describe("runSlot", () => {
     expect(h.snapCalls.filter((x) => x === prev)).toHaveLength(2);
     expect(h.snapCalls.filter((x) => x === SLOT)).toHaveLength(2);
     h.runner.stop();
+    expect(vi.getTimerCount()).toBe(0); // every per-slot retry timer cleared
+  });
+
+  it("a success through another trigger cancels that slot's pending retry", async () => {
+    let fail = true;
+    const h = make({
+      snapshot: async (_db, opts) => {
+        h.snapCalls.push(opts.slot);
+        if (fail) throw new BackupError("github_5xx");
+        return { file: snapFile, reused: false, counts: { secrets: 1, tokens: 1 }, bytes: 1, notes: [] };
+      },
+    });
+    await settle(h.runner.trigger(SLOT, "scheduled"));
+    expect(vi.getTimerCount()).toBe(1);
+    fail = false;
+    await settle(h.runner.trigger(SLOT, "catchup"));
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(60 * 60_000);
+    expect(h.snapCalls).toHaveLength(2);
   });
 
   it("a plain Error from the snapshot maps to internal", async () => {

@@ -157,7 +157,10 @@ export function createBackupRunner({
     }
     // The off-site copy is buffered in memory: refuse it before it can OOM
     // the vault (the local copy above is kept).
-    if (snap.bytes > MAX_OFFSITE_DB_BYTES) throw new BackupError("db_too_large");
+    if (snap.bytes > MAX_OFFSITE_DB_BYTES) {
+      ctx.stage = "offsite";
+      throw new BackupError("db_too_large");
+    }
 
     ctx.stage = "offsite";
     ctx.reconciled = false;
@@ -226,7 +229,9 @@ export function createBackupRunner({
         // Our own upload is definitely wrong: remove it now (best effort) so
         // it cannot be counted as a good copy later.
         if (err?.code === "verify_mismatch" && !run.abandoned && !closed) {
-          await client.deleteAsset(asset.id).catch(() => {});
+          await client.deleteAsset(asset.id).catch((e) => {
+            say("warn", `backup: cleanup of a mismatched upload failed: ${e?.code ?? e?.name}`);
+          });
         }
         throw err;
       }
@@ -291,6 +296,12 @@ export function createBackupRunner({
         scheduleKumaRetry(index + 1);
       }
     }, KUMA_RETRY_OFFSETS_MS[index] - prev);
+  }
+
+  function clearRetry(slot) {
+    const t = retryTimers.get(slot);
+    if (t) clearTimer(t);
+    retryTimers.delete(slot);
   }
 
   function scheduleRetry(slot, attempt) {
@@ -360,6 +371,7 @@ export function createBackupRunner({
 
     if (!error) {
       attempts.delete(slot);
+      clearRetry(slot);
       if (outcome.kuma && pushUrl) {
         const [status, msg] = outcome.kuma;
         const ok = await pushKuma(pushUrl, status, msg, fetchImpl, log);
@@ -382,6 +394,7 @@ export function createBackupRunner({
     const final = !error.retryable || attempt >= MAX_ATTEMPTS;
     if (final) {
       attempts.delete(slot);
+      clearRetry(slot);
       if (pushUrl) await pushKuma(pushUrl, "down", error.code, fetchImpl, log);
     } else {
       scheduleRetry(slot, attempt);

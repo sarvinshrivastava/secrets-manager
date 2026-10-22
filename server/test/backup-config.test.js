@@ -164,7 +164,8 @@ describe("parseBackupSettings", () => {
     ["SECRET_MANAGER_BACKUP_AGE_RECIPIENT", "AGE-SECRET-KEY-1QQQQ"],
     ["SECRET_MANAGER_BACKUP_GITHUB_TOKEN", "age-secret-key-1qqqq"],
     ["FOO", "AGE-SECRET-KEY-1QQQQ"],
-    ["BAR", "AGE-PLUGIN-YUBIKEY-1QQQ"],
+    ["BAR", "AGE-PLUGIN-YUBIKEY-1QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L"],
+    ["BAZ", "AGE-PLUGIN-FIDO2-HMAC-1QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L"],
   ]) {
     it(`private key marker in ${key} → private_key_on_vps`, () => {
       const env = offsiteEnv({ [key]: value });
@@ -175,20 +176,24 @@ describe("parseBackupSettings", () => {
     });
   }
 
-  it("does not flag a bare age-plugin binary path", () => {
-    const s = parseBackupSettings(
-      offsiteEnv({ PATH: "/usr/local/bin:/opt/age-plugin-yubikey/bin" }),
-    );
-    expect(s.offsiteErrors).toEqual([]);
-    expect(s.offsite).not.toBeNull();
-  });
+  for (const p of [
+    "/usr/local/bin:/opt/age-plugin-yubikey/bin",
+    "/opt/age-plugin-yubikey-1.2.0/bin",
+    "/opt/age-plugin-tpm-1.0/bin:/usr/bin",
+  ]) {
+    it(`does not flag the plugin binary path ${p}`, () => {
+      const s = parseBackupSettings(offsiteEnv({ PATH: p }));
+      expect(s.offsiteErrors).toEqual([]);
+      expect(s.offsite).not.toBeNull();
+    });
+  }
 
   it("flags a post-quantum private key", () => {
     const s = parseBackupSettings(offsiteEnv({ X: "AGE-SECRET-KEY-PQ-1QQQQ" }));
     expect(s.offsiteErrors).toEqual(["private_key_on_vps"]);
   });
 
-  for (const rel of ["frontend/dist", "server", "data", "data/backups"]) {
+  for (const rel of ["frontend/dist", "server", "data", "data/backups", "data/..bak", ".", "/"]) {
     it(`refuses a backup dir inside ${rel} and disables the feature`, () => {
       expect(parseBackupSettings({ SECRET_MANAGER_BACKUP_DIR: rel })).toEqual({
         enabled: false,
@@ -197,6 +202,25 @@ describe("parseBackupSettings", () => {
     });
   }
 
+  it("accepts a sibling whose name only starts with the root's name", () => {
+    expect(parseBackupSettings({ SECRET_MANAGER_BACKUP_DIR: "data-backups" }).enabled).toBe(true);
+  });
+
+  it("refuses the configured DB's own directory", () => {
+    expect(
+      parseBackupSettings({
+        SECRET_MANAGER_BACKUP_DIR: "/srv/vault/db",
+        SECRET_MANAGER_DB_PATH: "/srv/vault/db/secrets.db",
+      }),
+    ).toEqual({ enabled: false, error: "config_invalid" });
+    expect(
+      parseBackupSettings({
+        SECRET_MANAGER_BACKUP_DIR: "/srv/vault/backups",
+        SECRET_MANAGER_DB_PATH: "/srv/vault/db/secrets.db",
+      }).enabled,
+    ).toBe(true);
+  });
+
   it("caps KEEP_DAYS and remote keep counts", () => {
     const s = parseBackupSettings({
       SECRET_MANAGER_BACKUP_DIR: "/b",
@@ -204,20 +228,22 @@ describe("parseBackupSettings", () => {
     });
     expect(s.keepDays).toBe(14);
     expect(s.localErrors).toEqual(["config_invalid"]);
-    for (const [key, value] of [
-      ["SECRET_MANAGER_BACKUP_REMOTE_KEEP_DAILY", "1001"],
-      ["SECRET_MANAGER_BACKUP_REMOTE_KEEP_MONTHLY", "1000000000"],
+    for (const extra of [
+      { SECRET_MANAGER_BACKUP_REMOTE_KEEP_DAILY: "991" },
+      { SECRET_MANAGER_BACKUP_REMOTE_KEEP_MONTHLY: "1000000000" },
+      // daily + monthly + current slot must fit in one release (990)
+      { SECRET_MANAGER_BACKUP_REMOTE_KEEP_DAILY: "600", SECRET_MANAGER_BACKUP_REMOTE_KEEP_MONTHLY: "390" },
     ]) {
-      const r = parseBackupSettings(offsiteEnv({ [key]: value }));
+      const r = parseBackupSettings(offsiteEnv(extra));
       expect(r.offsiteErrors).toEqual(["config_invalid"]);
     }
     const ok = parseBackupSettings(
       offsiteEnv({
-        SECRET_MANAGER_BACKUP_REMOTE_KEEP_DAILY: "1000",
-        SECRET_MANAGER_BACKUP_REMOTE_KEEP_MONTHLY: "1200",
+        SECRET_MANAGER_BACKUP_REMOTE_KEEP_DAILY: "600",
+        SECRET_MANAGER_BACKUP_REMOTE_KEEP_MONTHLY: "389",
       }),
     );
-    expect(ok.offsite).toMatchObject({ keepDaily: 1000, keepMonthly: 1200 });
+    expect(ok.offsite).toMatchObject({ keepDaily: 600, keepMonthly: 389 });
   });
 
   for (const bad of ["24:00", "7:5", "ab", "-1:00", "12:60"]) {

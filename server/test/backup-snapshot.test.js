@@ -13,6 +13,7 @@ import {
   listLocal,
   INFLIGHT,
   LARGE_DB_BYTES,
+  MAX_OFFSITE_DB_BYTES,
 } from "../src/backup/snapshot.js";
 
 // Real better-sqlite3, no fake timers: db.backup steps through setImmediate.
@@ -137,11 +138,13 @@ describe("ensureLocalSnapshot", () => {
     await expect(run()).rejects.toMatchObject({ code: "local_failed" });
   });
 
-  it("notes large_db above 64 MB (injected size)", async () => {
-    const res = await run({ sizeOf: () => LARGE_DB_BYTES + 1 });
+  it("notes large_db above 32 MB, below the 64 MB off-site ceiling (injected size)", async () => {
+    expect(LARGE_DB_BYTES).toBe(32 * 1024 * 1024);
+    expect(LARGE_DB_BYTES).toBeLessThan(MAX_OFFSITE_DB_BYTES);
+    const res = await run({ sizeOf: () => 32 * 1024 * 1024 + 1 });
     expect(res.notes).toEqual(["large_db"]);
-    const small = await run();
-    expect(small.notes).toEqual([]);
+    const edge = await run({ sizeOf: () => 32 * 1024 * 1024 });
+    expect(edge.notes).toEqual([]);
   });
 
   it("stops before any mutation when the guard throws", async () => {

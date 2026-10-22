@@ -80,19 +80,33 @@ const DEFAULT_KEEP_DAYS = 14;
 const DEFAULT_REMOTE_KEEP_DAILY = 30;
 const DEFAULT_REMOTE_KEEP_MONTHLY = 12;
 const REPO_RE = /^([A-Za-z0-9-]+)\/([A-Za-z0-9._-]+)$/;
-// An age private key (AGE-SECRET-KEY-1…, AGE-SECRET-KEY-PQ-1…) or a plugin
-// identity (AGE-PLUGIN-<NAME>-1…). A bare "age-plugin-yubikey" path does not
-// match.
-const PRIVATE_KEY_RE = /AGE-SECRET-KEY-|AGE-PLUGIN-[A-Z0-9]+-1/i;
+// An age private key (AGE-SECRET-KEY-1…, AGE-SECRET-KEY-PQ-1…, any case) or a
+// plugin identity: upper-case AGE-PLUGIN-<NAME>-1 followed by a bech32 data run
+// (the name may contain hyphens, e.g. FIDO2-HMAC). Binary paths such as
+// /opt/age-plugin-yubikey-1.2/bin do not match.
+const PRIVATE_KEY_RES = [
+  /AGE-SECRET-KEY-/i,
+  /AGE-PLUGIN-[A-Z0-9-]+-1[02-9AC-HJ-NP-Z]{20,}/,
+];
 // Upper bounds keep a typo from turning into a huge loop or array.
 const MAX_KEEP_DAYS = 3650;
-const MAX_REMOTE_KEEP_DAILY = 1000; // GitHub's per-release asset limit
-const MAX_REMOTE_KEEP_MONTHLY = 1200;
+// GitHub allows 1000 assets per release; daily + monthly + the current slot
+// must fit, with room for a few broken or foreign assets.
+const MAX_REMOTE_ASSETS = 990;
+const MAX_REMOTE_KEEP_DAILY = MAX_REMOTE_ASSETS;
+const MAX_REMOTE_KEEP_MONTHLY = MAX_REMOTE_ASSETS;
 // Directories the backup dir must stay out of: the served frontend, the code,
-// and the live data mount.
+// and the live data mount (plus the configured DB's own directory).
 const FORBIDDEN_BACKUP_ROOTS = ["../../frontend", "../../server", "../../data"].map(
   (p) => path.resolve(__dirname, p),
 );
+
+function resolveDbPath(rawDbPath) {
+  if (!rawDbPath) return path.resolve(__dirname, "../../data/secrets.db");
+  return path.isAbsolute(rawDbPath)
+    ? rawDbPath
+    : path.resolve(__dirname, "../../", rawDbPath);
+}
 
 // Non-throwing twin of parsePositiveInt: null when set but invalid.
 function positiveIntOrNull(rawValue, defaultValue, max) {
@@ -102,9 +116,13 @@ function positiveIntOrNull(rawValue, defaultValue, max) {
   return parsed > 0 && parsed <= max ? parsed : null;
 }
 
+// Lexical containment (symlinks are not followed: the dir is operator config).
 function isInside(child, parent) {
   const rel = path.relative(parent, child);
-  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+  return (
+    rel === "" ||
+    (rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel))
+  );
 }
 
 // Only native X25519 (age1…) and hybrid post-quantum (age1pq1…) recipients.
@@ -144,13 +162,19 @@ export function parseBackupSettings(env = {}) {
   const dir = path.isAbsolute(rawDir)
     ? path.resolve(rawDir)
     : path.resolve(__dirname, "../../", rawDir);
-  // Inside frontend/ (served by express.static), server/ or data/: refuse
-  // the whole feature rather than write plaintext copies there.
-  if (FORBIDDEN_BACKUP_ROOTS.some((root) => isInside(dir, root))) {
+  // Inside (or a parent of) frontend/ (served by express.static), server/,
+  // data/ or the DB's directory: refuse the whole feature rather than write
+  // plaintext copies there.
+  const forbidden = [
+    ...FORBIDDEN_BACKUP_ROOTS,
+    path.dirname(resolveDbPath(env.SECRET_MANAGER_DB_PATH)),
+  ];
+  if (forbidden.some((root) => isInside(dir, root) || isInside(root, dir))) {
     return { enabled: false, error: "config_invalid" };
   }
 
-  // An invalid local key falls back to its default and is reported once.
+  // An invalid local key falls back to its default; every run then reports
+  // config_invalid (paged when a push URL is configured).
   const parsedTime = parseUtcTime(
     env.SECRET_MANAGER_BACKUP_UTC_TIME || DEFAULT_BACKUP_TIME,
   );
@@ -194,7 +218,9 @@ export function parseBackupSettings(env = {}) {
   result.pushUrl = parseHttpsUrl(rawPushUrl);
 
   // The age private key must never be on the VPS: scan every env value.
-  const leaked = Object.values(env).some((v) => PRIVATE_KEY_RE.test(String(v ?? "")));
+  const leaked = Object.values(env).some((v) =>
+    PRIVATE_KEY_RES.some((re) => re.test(String(v ?? ""))),
+  );
   if (leaked) {
     result.offsiteErrors.push("private_key_on_vps");
     return result;
@@ -214,7 +240,12 @@ export function parseBackupSettings(env = {}) {
     DEFAULT_REMOTE_KEEP_MONTHLY,
     MAX_REMOTE_KEEP_MONTHLY,
   );
+  const tooMany =
+    keepDaily !== null &&
+    keepMonthly !== null &&
+    keepDaily + keepMonthly + 1 > MAX_REMOTE_ASSETS;
   if (
+    tooMany ||
     !recipients ||
     !repoMatch ||
     !token ||
