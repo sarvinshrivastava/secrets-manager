@@ -159,7 +159,9 @@ There are three backup paths. They are independent: any one of them is enough to
   ```
 - Kuma push monitor **"vault backup (monthly host copy)"**: heartbeat 2073600 s (24 d),
   retries 1, retry interval 691200 s (8 d) → down about 32 days after the last good run.
-  (Uptime Kuma 1.x caps both intervals at 24 days, hence the split.)
+  (Uptime Kuma 1.x caps both intervals at 24 days, hence the split.) **Pending (yellow)
+  from about day 24 of each month is normal**: the gap between two 1sts is 28–31 days.
+  Pending does not notify; only Down pages, 1–4 days after a failed 1st.
 - It is the copy the vault process cannot delete. The deploy workflow's pre-deploy backups
   land in the same directory with the same `KEEP=14`, so frequent deploys push older
   monthlies out (a root-only copy always remains; its age varies).
@@ -199,7 +201,14 @@ restored DB opens but no secret value decrypts.
 6. Eject: `cd ~ && hdiutil detach "$RESTDEV" && rm ~/Downloads/secrets-<slot>.db.gz.age`.
 
 Repeat steps 2–3 and 6 alone as a **decrypt test** (suggested quarterly): pass = `ok` and
-both counts equal the slot's audit row.
+both counts equal the slot's audit row. The decrypt test does not need the master key, so
+**check the stored master key too while the VPS still exists** (own terminal; the two
+hashes must be equal; a hash is safe to print, the key never is):
+```sh
+ssh vps 'grep "^SECRET_MANAGER_MASTER_KEY=" /root/secrets-manager/.env | cut -d= -f2- | tr -d "\n" | shasum -a 256'
+# copy the master key from your store to the clipboard, then:
+pbpaste | tr -d "\n" | shasum -a 256 && pbcopy < /dev/null
+```
 
 ### 3b. Key, token and monitor handling
 
