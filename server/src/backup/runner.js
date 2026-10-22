@@ -11,7 +11,12 @@ import {
   RETRY_DELAYS_MS,
   RUN_DEADLINE_MS,
 } from "./schedule.js";
-import { cleanInflight, ensureLocalSnapshot, listLocal } from "./snapshot.js";
+import {
+  cleanInflight,
+  ensureLocalSnapshot,
+  listLocal,
+  MAX_OFFSITE_DB_BYTES,
+} from "./snapshot.js";
 import {
   classifyAsset,
   LABEL_RE,
@@ -73,7 +78,8 @@ export function createBackupRunner({
   const { dir, time, keepDays, offsite, pushUrl, localErrors, offsiteErrors } =
     cfg;
   const secrets = [offsite?.token, pushUrl];
-  if (pushUrl) secrets.push(new URL(pushUrl).pathname);
+  const pushPath = pushUrl ? new URL(pushUrl).pathname : "";
+  if (pushPath.length > 1) secrets.push(pushPath); // never redact a bare "/"
   const say = (level, msg) => log[level](redact(msg, secrets));
 
   let closed = false;
@@ -83,15 +89,14 @@ export function createBackupRunner({
   let currentRun = null;
   let slotTimer = null;
   let catchupTimer = null;
-  let retryTimer = null;
-  let retrySlot = null;
+  const retryTimers = new Map(); // slot → pending retry timer (one per slot)
   let kumaTimer = null;
 
   const arm = (fn, ms) => {
     const t = setTimer(() => {
       Promise.resolve()
         .then(fn)
-        .catch(() => {});
+        .catch((err) => say("error", `backup: timer error: ${err?.name ?? "error"}`));
     }, Math.max(0, ms));
     t?.unref?.();
     return t;
@@ -146,8 +151,13 @@ export function createBackupRunner({
     if (offsiteErrors.length > 0) throw new BackupError(offsiteErrors[0]);
     if (!offsite) {
       ctx.stage = "local_only";
+      // A mistyped local key fell back to its default: report it on every run.
+      if (localErrors.length > 0) throw new BackupError("config_invalid");
       return { kuma: null };
     }
+    // The off-site copy is buffered in memory: refuse it before it can OOM
+    // the vault (the local copy above is kept).
+    if (snap.bytes > MAX_OFFSITE_DB_BYTES) throw new BackupError("db_too_large");
 
     ctx.stage = "offsite";
     ctx.reconciled = false;
@@ -188,7 +198,15 @@ export function createBackupRunner({
         break;
       }
       guard();
-      enc ??= await encryptSnapshot(snap.file, offsite.recipients, { signal });
+      if (!enc) {
+        try {
+          enc = await encryptSnapshot(snap.file, offsite.recipients, { signal });
+        } catch (err) {
+          throw signal.aborted
+            ? new BackupError("timeout", { cause: err })
+            : toBackupError(err, "local"); // fs errors → local_failed
+        }
+      }
       ctx.gz_bytes = enc.gzBytes;
       ctx.cipher_bytes = enc.bytes.length;
       guard();
@@ -199,10 +217,19 @@ export function createBackupRunner({
         if (err?.status === 422 && pass === 0) continue; // already exists: reconcile once
         throw err;
       }
-      await verifyAsset(client, asset, enc.sha256, {
-        expectedSize: enc.bytes.length,
-        sleep,
-      });
+      try {
+        await verifyAsset(client, asset, enc.sha256, {
+          expectedSize: enc.bytes.length,
+          sleep,
+        });
+      } catch (err) {
+        // Our own upload is definitely wrong: remove it now (best effort) so
+        // it cannot be counted as a good copy later.
+        if (err?.code === "verify_mismatch" && !run.abandoned && !closed) {
+          await client.deleteAsset(asset.id).catch(() => {});
+        }
+        throw err;
+      }
       break;
     }
 
@@ -267,16 +294,15 @@ export function createBackupRunner({
   }
 
   function scheduleRetry(slot, attempt) {
-    if (retryTimer) {
-      clearTimer(retryTimer);
-      if (retrySlot !== slot) attempts.delete(retrySlot); // superseded
-    }
-    retrySlot = slot;
-    retryTimer = arm(() => {
-      retryTimer = null;
-      retrySlot = null;
-      return trigger(slot, "retry");
-    }, RETRY_DELAYS_MS[attempt - 1]);
+    const prev = retryTimers.get(slot);
+    if (prev) clearTimer(prev);
+    retryTimers.set(
+      slot,
+      arm(() => {
+        retryTimers.delete(slot);
+        return trigger(slot, "retry");
+      }, RETRY_DELAYS_MS[attempt - 1]),
+    );
   }
 
   async function execute(slot, kind) {
@@ -434,10 +460,11 @@ export function createBackupRunner({
     },
     stop() {
       closed = true;
-      for (const t of [slotTimer, catchupTimer, retryTimer, kumaTimer]) {
+      for (const t of [slotTimer, catchupTimer, kumaTimer, ...retryTimers.values()]) {
         if (t) clearTimer(t);
       }
-      slotTimer = catchupTimer = retryTimer = kumaTimer = null;
+      retryTimers.clear();
+      slotTimer = catchupTimer = kumaTimer = null;
       if (currentRun) abandon(currentRun);
     },
     trigger,

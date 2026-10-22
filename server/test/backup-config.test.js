@@ -175,6 +175,51 @@ describe("parseBackupSettings", () => {
     });
   }
 
+  it("does not flag a bare age-plugin binary path", () => {
+    const s = parseBackupSettings(
+      offsiteEnv({ PATH: "/usr/local/bin:/opt/age-plugin-yubikey/bin" }),
+    );
+    expect(s.offsiteErrors).toEqual([]);
+    expect(s.offsite).not.toBeNull();
+  });
+
+  it("flags a post-quantum private key", () => {
+    const s = parseBackupSettings(offsiteEnv({ X: "AGE-SECRET-KEY-PQ-1QQQQ" }));
+    expect(s.offsiteErrors).toEqual(["private_key_on_vps"]);
+  });
+
+  for (const rel of ["frontend/dist", "server", "data", "data/backups"]) {
+    it(`refuses a backup dir inside ${rel} and disables the feature`, () => {
+      expect(parseBackupSettings({ SECRET_MANAGER_BACKUP_DIR: rel })).toEqual({
+        enabled: false,
+        error: "config_invalid",
+      });
+    });
+  }
+
+  it("caps KEEP_DAYS and remote keep counts", () => {
+    const s = parseBackupSettings({
+      SECRET_MANAGER_BACKUP_DIR: "/b",
+      SECRET_MANAGER_BACKUP_KEEP_DAYS: "3651",
+    });
+    expect(s.keepDays).toBe(14);
+    expect(s.localErrors).toEqual(["config_invalid"]);
+    for (const [key, value] of [
+      ["SECRET_MANAGER_BACKUP_REMOTE_KEEP_DAILY", "1001"],
+      ["SECRET_MANAGER_BACKUP_REMOTE_KEEP_MONTHLY", "1000000000"],
+    ]) {
+      const r = parseBackupSettings(offsiteEnv({ [key]: value }));
+      expect(r.offsiteErrors).toEqual(["config_invalid"]);
+    }
+    const ok = parseBackupSettings(
+      offsiteEnv({
+        SECRET_MANAGER_BACKUP_REMOTE_KEEP_DAILY: "1000",
+        SECRET_MANAGER_BACKUP_REMOTE_KEEP_MONTHLY: "1200",
+      }),
+    );
+    expect(ok.offsite).toMatchObject({ keepDaily: 1000, keepMonthly: 1200 });
+  });
+
   for (const bad of ["24:00", "7:5", "ab", "-1:00", "12:60"]) {
     it(`bad UTC_TIME ${bad} → 22:30 and localErrors config_invalid`, () => {
       const s = parseBackupSettings({

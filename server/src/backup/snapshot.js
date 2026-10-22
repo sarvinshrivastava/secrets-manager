@@ -8,7 +8,10 @@ import { BackupError, isDiskFull, toBackupError } from "./errors.js";
 
 export const LOCAL_RE = /^secrets-(\d{8})\.db$/;
 export const INFLIGHT = ".inflight.tmp";
-export const LARGE_DB_BYTES = 64 * 1024 * 1024;
+// The off-site copy is buffered in memory (~3× the DB) inside a 256m
+// container: warn from 32 MB, refuse the off-site part above 64 MB.
+export const LARGE_DB_BYTES = 32 * 1024 * 1024;
+export const MAX_OFFSITE_DB_BYTES = 64 * 1024 * 1024;
 
 const noop = () => {};
 

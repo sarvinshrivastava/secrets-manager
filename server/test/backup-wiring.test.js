@@ -42,6 +42,12 @@ describe("startBackups", () => {
     }
   });
 
+  it("logs and returns null when the backup dir was refused", () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(startBackups({ backup: { enabled: false, error: "config_invalid" } }, {})).toBeNull();
+    expect(spy).toHaveBeenCalledWith("backup disabled: config_invalid");
+  });
+
   it("returns null and logs the error name when creation throws", () => {
     const spy = vi.spyOn(console, "error").mockImplementation(() => {});
     const runner = startBackups({ backup: { enabled: true } }, {}, {

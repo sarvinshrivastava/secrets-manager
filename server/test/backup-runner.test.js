@@ -8,6 +8,7 @@ import { parseBackupSettings } from "../src/config.js";
 import { createBackupRunner, pushKuma, redact } from "../src/backup/runner.js";
 import { BackupError } from "../src/backup/errors.js";
 import { shiftSlot } from "../src/backup/schedule.js";
+import { Database } from "../src/database.js";
 
 const TOKEN = "github_pat_RUNNERSECRET_abcdef";
 const PUSH = "https://kuma.example/api/push/PUSHSECRET";
@@ -48,7 +49,9 @@ function fakeServer() {
     s.assets.push(a);
     return a;
   };
+  s.signals = [];
   s.fetch = async (url, init = {}) => {
+    s.signals.push(init.signal);
     const u = new URL(url);
     const method = init.method ?? "GET";
     if (u.host === "kuma.example") {
@@ -131,7 +134,7 @@ function env(extra = {}) {
   };
 }
 
-function make({ envOverrides = {}, envRaw = null, snapshot = null, fetchImpl = null } = {}) {
+function make({ envOverrides = {}, envRaw = null, snapshot = null, fetchImpl = null, db: realDb = null } = {}) {
   const server = fakeServer();
   const audits = [];
   const lines = [];
@@ -147,7 +150,7 @@ function make({ envOverrides = {}, envRaw = null, snapshot = null, fetchImpl = n
     dbPath: path.join(root, "secrets.db"),
     backup: parseBackupSettings(envRaw ?? env(envOverrides)),
   };
-  const db = { insertAuditLog: (row) => audits.push({ ...row, details: JSON.parse(row.details) }) };
+  const db = realDb ?? { insertAuditLog: (row) => audits.push({ ...row, details: JSON.parse(row.details) }) };
   const runner = createBackupRunner({
     db,
     settings,
@@ -428,6 +431,117 @@ describe("runSlot", () => {
     expect(h.audits.map((x) => x.keyName)).toEqual([SLOT, prev]);
   });
 
+  it("local-only with a mistyped local key: audit error config_invalid, no fetch", async () => {
+    const h = make({ envRaw: { NODE_ENV: "production", SECRET_MANAGER_BACKUP_DIR: dir, SECRET_MANAGER_BACKUP_KEEP_DAYS: "x" } });
+    const res = await settle(h.runner.trigger(SLOT, "scheduled"));
+    expect(res).toMatchObject({ status: "error", code: "config_invalid", final: true });
+    expect(h.snapCalls).toEqual([SLOT]);
+    expect(h.server.calls).toEqual([]);
+    expect(h.audits[0].details.stage).toBe("local_only");
+  });
+
+  it("an abandoned run in the off-site stage aborts its fetch and makes no further call", async () => {
+    let release;
+    const gate = new Promise((r) => (release = r));
+    const h = make();
+    h.server.override = (label) => {
+      if (label === "GET list") {
+        return async () => {
+          await gate;
+          return new Response("[]", { status: 200, headers: { "content-type": "application/json" } });
+        };
+      }
+      return undefined;
+    };
+    const p = h.runner.trigger(SLOT, "scheduled");
+    await settle(new Promise((r) => setTimeout(r, 1000)), 100, 50);
+    expect(h.server.calls).toEqual(["GET tag", "GET list"]);
+    await vi.advanceTimersByTimeAsync(20 * 60_000);
+    const res = await p;
+    expect(res.code).toBe("timeout");
+    expect(h.server.signals[1].aborted).toBe(true);
+    const calls = h.server.calls.length;
+    release();
+    await settle(new Promise((r) => setTimeout(r, 5000)), 100, 100);
+    expect(h.server.calls.length).toBe(calls);
+    expect(h.server.calls).not.toContain("POST upload");
+    expect(h.server.calls).not.toContain("DELETE asset");
+  });
+
+  it("writes a real audit row through Database", async () => {
+    const realDb = new Database(path.join(root, "audit.db"));
+    try {
+      const h = make({ db: realDb });
+      await settle(h.runner.trigger(SLOT, "scheduled"));
+      const row = realDb.db
+        .prepare("SELECT token_name, action, key_name, status, ip_address, details FROM audit_logs")
+        .get();
+      expect(row).toMatchObject({ token_name: "system:backup", action: "backup", key_name: SLOT, status: "success", ip_address: null });
+      expect(JSON.parse(row.details).stage).toBe("done");
+      expect(row.details).not.toContain(TOKEN);
+    } finally {
+      realDb.db.close();
+    }
+  });
+
+  it("a DB above the off-site ceiling fails db_too_large before any GitHub call", async () => {
+    const h = make({
+      snapshot: async (_db, opts) => {
+        opts.guard();
+        return { file: snapFile, reused: false, counts: { secrets: 1, tokens: 1 }, bytes: 64 * 1024 * 1024 + 1, notes: ["large_db"] };
+      },
+    });
+    const res = await settle(h.runner.trigger(SLOT, "scheduled"));
+    expect(res).toMatchObject({ status: "error", code: "db_too_large", final: true });
+    expect(h.server.calls).toEqual(["KUMA down"]);
+    expect(h.server.kuma).toEqual([{ status: "down", msg: "db_too_large" }]);
+  });
+
+  it("an unreadable snapshot during encryption maps to local_failed, not internal", async () => {
+    const h = make({
+      snapshot: async () => ({ file: path.join(root, "gone.db"), reused: true, counts: { secrets: 1, tokens: 1 }, bytes: 10, notes: [] }),
+    });
+    const res = await settle(h.runner.trigger(SLOT, "scheduled"));
+    expect(res.code).toBe("local_failed");
+    expect(h.server.calls).not.toContain("POST upload");
+  });
+
+  it("a post-upload verify_mismatch deletes our own asset before retrying", async () => {
+    const h = make();
+    h.server.override = (label) => {
+      if (label === "POST upload") {
+        h.server.assets.push({ id: 5, name: `secrets-${SLOT}.db.gz.age`, state: "uploaded", size: 1, label: "x", digest: null });
+        return new Response(
+          JSON.stringify({ id: 5, name: `secrets-${SLOT}.db.gz.age`, state: "uploaded", size: 1, label: "x", digest: null }),
+          { status: 201, headers: { "content-type": "application/json" } },
+        );
+      }
+      return undefined;
+    };
+    const res = await settle(h.runner.trigger(SLOT, "scheduled"));
+    expect(res.code).toBe("verify_mismatch");
+    expect(h.server.calls.slice(-1)).toEqual(["DELETE asset"]);
+    expect(h.server.assets.some((a) => a.id === 5)).toBe(false);
+  });
+
+  it("retries of two different slots are independent", async () => {
+    const h = make({
+      snapshot: async (_db, opts) => {
+        h.snapCalls.push(opts.slot);
+        throw new BackupError("github_5xx");
+      },
+    });
+    const prev = shiftSlot(SLOT, -1);
+    await settle(h.runner.trigger(prev, "catchup"));
+    await settle(h.runner.trigger(SLOT, "scheduled"));
+    expect(vi.getTimerCount()).toBe(2);
+    await vi.advanceTimersByTimeAsync(15 * 60_000);
+    await settle(h.runner.idle(), 1, 100);
+    expect(h.snapCalls.filter((x) => x === prev)).toHaveLength(2);
+    expect(h.snapCalls.filter((x) => x === SLOT)).toHaveLength(2);
+    h.runner.stop();
+  });
+
   it("a plain Error from the snapshot maps to internal", async () => {
     const h = make({
       snapshot: async () => {
@@ -574,6 +688,7 @@ describe("timers", () => {
     const catchups = h.audits.filter((a) => a.details.trigger === "catchup");
     expect(catchups.map((a) => a.keyName)).toEqual([SLOT]);
     expect(catchups[0].details.reconciled).toBe(true);
+    expect(catchups[0].details.attempt).toBe(1); // attempts cleared after the success
     expect(h.server.calls.filter((c) => c === "POST upload")).toHaveLength(1);
     h.runner.stop();
   });

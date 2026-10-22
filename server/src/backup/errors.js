@@ -18,6 +18,7 @@ export const CODES = Object.freeze([
   "verify_mismatch",
   "token_expiring",
   "slot_asset_foreign", // current slot's asset uploaded without our label
+  "db_too_large", // DB above the buffered off-site ceiling: would OOM the vault
   "timeout", // run deadline exceeded, or the run was abandoned
   "internal", // any non-BackupError (a bug)
 ]);
@@ -35,6 +36,7 @@ export const NON_RETRYABLE = new Set([
   "private_key_on_vps",
   "token_expiring",
   "slot_asset_foreign",
+  "db_too_large",
 ]);
 
 export class BackupError extends Error {

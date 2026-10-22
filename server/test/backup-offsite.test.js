@@ -215,6 +215,22 @@ describe("github client", () => {
     expectClean(lines);
   });
 
+  it("maps a non-array listing body to github_http", async () => {
+    const { c } = client(() => jsonRes({ message: "odd" }));
+    await expect(c.listAssets(42)).rejects.toMatchObject({ code: "github_http" });
+  });
+
+  it("logs only the status when the unauthenticated redirect hop fails", async () => {
+    const { c, lines } = client((url) => {
+      if (url === LOCATION) return jsonRes({ message: `denied ${LOCATION}` }, 403);
+      return new Response(null, { status: 302, headers: { location: LOCATION } });
+    });
+    await expect(c.downloadAssetSha256(9)).rejects.toMatchObject({ code: "github_auth" });
+    expect(lines.join("\n")).toContain("downloadAsset failed: 403");
+    expect(lines.join("\n")).not.toContain("denied");
+    expectClean(lines);
+  });
+
   it("treats delete 204 and 404 as done", async () => {
     let status = 204;
     const { c, calls } = client(() => new Response(null, { status }));

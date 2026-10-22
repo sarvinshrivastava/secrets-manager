@@ -82,8 +82,8 @@ describe("schedule", () => {
 });
 
 describe("errors", () => {
-  it("has a closed set of 17 codes and 4 notes", () => {
-    expect(CODES).toHaveLength(17);
+  it("has a closed set of 18 codes and 4 notes", () => {
+    expect(CODES).toHaveLength(18);
     expect(NOTES).toHaveLength(4);
   });
 
@@ -96,6 +96,7 @@ describe("errors", () => {
     expect(new BackupError("token_expiring").retryable).toBe(false);
     expect(new BackupError("private_key_on_vps").retryable).toBe(false);
     expect(new BackupError("verify_mismatch").retryable).toBe(true);
+    expect(new BackupError("db_too_large").retryable).toBe(false);
     expect(new BackupError("not-a-code").code).toBe("internal");
   });
 

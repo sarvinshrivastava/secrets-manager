@@ -128,14 +128,20 @@ export function createGithubClient({
     }
   }
 
-  async function failWith(res, op) {
+  // `readBody: false` for the unauthenticated redirect hop: its body could
+  // echo the signed URL, so only the status is logged.
+  async function failWith(res, op, { readBody = true } = {}) {
     const err = statusError(res, op);
     let message = "";
-    try {
-      const body = await res.text();
-      message = JSON.parse(body)?.message ?? "";
-    } catch {
-      /* no JSON body */
+    if (readBody) {
+      try {
+        const body = await res.text();
+        message = JSON.parse(body)?.message ?? "";
+      } catch {
+        /* no JSON body */
+      }
+    } else {
+      await discardBody(res);
     }
     const clean = redact(message, [token]).slice(0, MESSAGE_MAX);
     log.error(`backup: github ${op} failed: ${res.status} ${clean}`.trim());
@@ -206,7 +212,11 @@ export function createGithubClient({
         try {
           items = await res.json();
         } catch (err) {
-          throw new BackupError("github_network", { cause: err });
+          throw networkFailure("listAssets", err);
+        }
+        if (!Array.isArray(items)) {
+          log.error("backup: github listAssets failed: unexpected body");
+          throw new BackupError("github_http");
         }
         all.push(...items);
         const next = nextLink(res.headers.get("link"));
@@ -275,7 +285,9 @@ export function createGithubClient({
         { ...download, redirect: "manual" },
         TRANSFER_TIMEOUT_MS,
       );
+      let followed = false;
       if (res.status >= 300 && res.status < 400) {
+        followed = true;
         const location = res.headers.get("location");
         await discardBody(res);
         if (!location) throw new BackupError("github_http", { status: res.status });
@@ -283,7 +295,9 @@ export function createGithubClient({
           auth: false,
         });
       }
-      if (!res.ok) throw await failWith(res, "downloadAsset");
+      if (!res.ok) {
+        throw await failWith(res, "downloadAsset", { readBody: !followed });
+      }
       const hash = nodeCrypto.createHash("sha256");
       try {
         for await (const chunk of res.body) hash.update(chunk);

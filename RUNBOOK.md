@@ -109,6 +109,8 @@ There are three backup paths. They are independent: any one of them is enough to
 - **Switch:** `SECRET_MANAGER_BACKUP_DIR=/app/backups` in `.env` turns it on; unset = off
   (no timer, no files, no egress). All keys are in `.env.example`. A typo in a backup key
   never stops the vault from booting: it is reported as a reason code (§3c) and paged.
+  A dir inside `frontend/`, `server/` or `data/` is refused and the feature stays off (log
+  line `backup disabled: config_invalid`; nothing pages, so check the log after a change).
 - **Slot:** one per UTC day, named by its UTC date (`YYYYMMDD`), at
   `SECRET_MANAGER_BACKUP_UTC_TIME` (default `22:30`). The 22:30 UTC run of 20 Oct is slot
   `20261020` (04:00 IST on 21 Oct). Retries keep the slot name even after 00:00 UTC.
@@ -202,12 +204,14 @@ restored DB opens but no secret value decrypts.
 
 Repeat steps 2–3 and 6 alone as a **decrypt test** (suggested quarterly): pass = `ok` and
 both counts equal the slot's audit row. The decrypt test does not need the master key, so
-**check the stored master key too while the VPS still exists** (own terminal; the two
-hashes must be equal; a hash is safe to print, the key never is):
+**check the stored master key too while the VPS still exists** (own terminal). It compares
+an HMAC under a throwaway random nonce, so the printed values are useless for guessing the
+key even if it is a human-chosen passphrase; the two lines must be equal:
 ```sh
-ssh vps 'grep "^SECRET_MANAGER_MASTER_KEY=" /root/secrets-manager/.env | cut -d= -f2- | tr -d "\n" | shasum -a 256'
+N=$(openssl rand -hex 32)
+ssh vps "grep '^SECRET_MANAGER_MASTER_KEY=' /root/secrets-manager/.env | cut -d= -f2- | tr -d '\n' | openssl dgst -sha256 -hmac $N"
 # copy the master key from your store to the clipboard, then:
-pbpaste | tr -d "\n" | shasum -a 256 && pbcopy < /dev/null
+pbpaste | tr -d '\n' | openssl dgst -sha256 -hmac "$N"; pbcopy < /dev/null; unset N
 ```
 
 ### 3b. Key, token and monitor handling
@@ -269,6 +273,7 @@ The audit row's `details.code` (and the Kuma `msg` on a final failure).
 | `verify_mismatch` | the uploaded asset's digest/size/label/download hash does not match | retried; if it repeats, inspect the release assets |
 | `token_expiring` | the PAT expires within 7 days (the copy **was** made) | rotate the PAT (§3b) |
 | `slot_asset_foreign` | the slot's asset exists, uploaded, without our `sha256-` label (made by hand?) | inspect it; delete it in the release UI if it is not needed; the next slot proceeds |
+| `db_too_large` | the DB is above 64 MB; the off-site copy is buffered in memory (~3× the DB) and would OOM the 256m container, so it is refused (the local copy is still made) | raise `mem_limit` and the limit in `snapshot.js`, or move the off-site path to file streaming |
 | `timeout` | the run exceeded 20 min, or was cut by a shutdown | logs; retried |
 | `internal` | a bug (the log has only the error class name) | logs; open an issue |
 
@@ -279,7 +284,7 @@ Notes (on an otherwise successful run, `details.notes`):
 | `retention_failed` | a remote retention delete/list failed | none; the next slot repeats it |
 | `kuma_failed` | the `up` push failed; re-sent at +1/+5/+15 min | check Kuma reachability from the container |
 | `local_rotation_failed` | an old local file could not be deleted | `ls -l backups/` |
-| `large_db` | the DB is above 64 MB | the backup buffers ~3× the DB in memory (`mem_limit: 256m`): revisit the design |
+| `large_db` | the DB is above 32 MB (warning; at 64 MB the off-site copy stops with `db_too_large`) | plan the move to file streaming or a higher `mem_limit` |
 
 ---
 

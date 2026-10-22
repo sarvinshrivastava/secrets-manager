@@ -81,7 +81,12 @@ export function migrateEncryptionIfNeeded(db, crypto) {
 // start (logged with the error name only).
 export function startBackups(settings, db, deps = {}) {
   try {
-    if (!settings.backup?.enabled) return null;
+    if (!settings.backup?.enabled) {
+      if (settings.backup?.error) {
+        console.error(`backup disabled: ${settings.backup.error}`);
+      }
+      return null;
+    }
     const { createBackupRunner: create = createBackupRunner, ...rest } = deps;
     return create({ db, settings, ...rest }).start();
   } catch (err) {

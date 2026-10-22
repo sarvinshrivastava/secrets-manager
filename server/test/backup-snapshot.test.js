@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import DatabaseDriver from "better-sqlite3";
 import { Database } from "../src/database.js";
+import { BackupError } from "../src/backup/errors.js";
 import {
   ensureLocalSnapshot,
   cleanInflight,
@@ -144,15 +145,27 @@ describe("ensureLocalSnapshot", () => {
   });
 
   it("stops before any mutation when the guard throws", async () => {
-    const err = Object.assign(new Error("timeout"), { code: "timeout" });
     await expect(
       run({
         guard: () => {
-          throw err;
+          throw new BackupError("timeout");
         },
       }),
-    ).rejects.toBeTruthy();
+    ).rejects.toMatchObject({ code: "timeout" });
     expect(fs.existsSync(dir)).toBe(false);
+  });
+
+  it("an abandoned run after db.backup leaves the temp file for the next cleanInflight", async () => {
+    let calls = 0;
+    const guard = () => {
+      calls += 1;
+      if (calls >= 4) throw new BackupError("timeout"); // the check after db.backup
+    };
+    await expect(run({ guard })).rejects.toMatchObject({ code: "timeout" });
+    expect(fs.existsSync(path.join(dir, INFLIGHT))).toBe(true);
+    expect(fs.existsSync(path.join(dir, "secrets-20261020.db"))).toBe(false);
+    cleanInflight(dir);
+    expect(fs.readdirSync(dir)).toEqual([]);
   });
 });
 
