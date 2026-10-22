@@ -41,7 +41,7 @@ export { redact };
 
 // The push URL is a capability: it is never logged, only the HTTP status or
 // the network error code is.
-export async function pushKuma(url, status, code, fetchImpl, log) {
+export async function pushKuma(url, status, code, fetchImpl, log, signal) {
   try {
     const u = new URL(url);
     u.searchParams.set("status", status);
@@ -49,7 +49,9 @@ export async function pushKuma(url, status, code, fetchImpl, log) {
     u.searchParams.set("ping", "");
     const res = await fetchImpl(u.toString(), {
       method: "GET",
-      signal: AbortSignal.timeout(KUMA_TIMEOUT_MS),
+      signal: signal
+        ? AbortSignal.any([signal, AbortSignal.timeout(KUMA_TIMEOUT_MS)])
+        : AbortSignal.timeout(KUMA_TIMEOUT_MS),
     });
     await discardBody(res);
     if (!res.ok) {
@@ -91,6 +93,7 @@ export function createBackupRunner({
   let catchupTimer = null;
   const retryTimers = new Map(); // slot → pending retry timer (one per slot)
   let kumaTimer = null;
+  let kumaResend = null; // AbortController of an in-flight "up" re-send
 
   const arm = (fn, ms) => {
     const t = setTimer(() => {
@@ -285,9 +288,13 @@ export function createBackupRunner({
     }
   }
 
+  // Cancels a pending "up" re-send AND aborts one already in flight, so a
+  // stale "up" can neither land after a newer push nor re-arm its chain.
   function cancelKumaRetry() {
     if (kumaTimer) clearTimer(kumaTimer);
     kumaTimer = null;
+    kumaResend?.abort();
+    kumaResend = null;
   }
 
   function scheduleKumaRetry(index = 0) {
@@ -296,7 +303,11 @@ export function createBackupRunner({
     kumaTimer = arm(async () => {
       kumaTimer = null;
       if (closed) return;
-      const ok = await pushKuma(pushUrl, "up", "OK", fetchImpl, log);
+      const resend = new AbortController();
+      kumaResend = resend;
+      const ok = await pushKuma(pushUrl, "up", "OK", fetchImpl, log, resend.signal);
+      if (kumaResend !== resend || closed) return; // superseded or stopped
+      kumaResend = null;
       if (!ok && index + 1 < KUMA_RETRY_OFFSETS_MS.length) {
         scheduleKumaRetry(index + 1);
       }
@@ -482,6 +493,7 @@ export function createBackupRunner({
     },
     stop() {
       closed = true;
+      kumaResend?.abort();
       for (const t of [slotTimer, catchupTimer, kumaTimer, ...retryTimers.values()]) {
         if (t) clearTimer(t);
       }

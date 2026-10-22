@@ -211,14 +211,15 @@ an HMAC under a throwaway random nonce: the printed hex is useless for guessing 
 without the nonce, which lives only in this terminal (and, for a moment, in the VPS process
 list, which only root can read, and root already has `.env`). The VPS side reads the value
 the container actually uses (`printenv`, after compose has stripped any quotes). `-r` and
-`cut` make LibreSSL (macOS) and OpenSSL 3 (VPS) print the same bare hex; trailing CR/LF from
-a password manager are stripped. The container must be running the current `.env` (deploy
-after any `.env` edit, §3b). The two lines must be equal:
+`cut` make LibreSSL (macOS) and OpenSSL 3 (VPS) print the same bare hex. Only the clipboard
+side drops CR/LF (password managers add them); the VPS side drops just `printenv`'s final
+newline, so a stray CR in the real value still shows as a mismatch. The container must be
+running the current `.env` (deploy after any `.env` edit, §3b). Each command runs only if
+the nonce is set; the two lines must be equal:
 ```sh
-N=$(openssl rand -hex 32); : "${N:?nonce generation failed}"
-ssh vps "docker exec secret-manager printenv SECRET_MANAGER_MASTER_KEY | tr -d '\r\n' | openssl dgst -sha256 -hmac $N -r | cut -d' ' -f1"
+N=$(openssl rand -hex 32) && [ -n "$N" ] && ssh vps "docker exec secret-manager printenv SECRET_MANAGER_MASTER_KEY | tr -d '\n' | openssl dgst -sha256 -hmac $N -r | cut -d' ' -f1"
 # copy the master key from your store to the clipboard, then:
-pbpaste | tr -d "\r\n" | openssl dgst -sha256 -hmac "$N" -r | cut -d' ' -f1; pbcopy < /dev/null; unset N
+[ -n "$N" ] && pbpaste | tr -d "\r\n" | openssl dgst -sha256 -hmac "$N" -r | cut -d' ' -f1; pbcopy < /dev/null; unset N
 ```
 
 ### 3b. Key, token and monitor handling
@@ -273,7 +274,7 @@ The audit row's `details.code` (and the Kuma `msg` on a final failure).
 | `integrity_failed` | the fresh snapshot failed `integrity_check` | §5 on the live DB; do not ignore |
 | `local_failed` | any other filesystem error in `backups/` (permissions, missing mount) | `ls -ld backups` must be `drwx------ 1000 1000`; re-run the deploy (it fixes the dir) |
 | `release_not_found` | 404 on the `daily` tag: the release is missing (or a draft), **or** the PAT cannot see the repo | check the release is published; check the PAT's repository access |
-| `github_auth` | 401, or 403 without rate-limit headers: PAT expired, revoked or missing Contents write | rotate the PAT (§3b) |
+| `github_auth` | 401, or 403 without rate-limit headers, on a PAT-authenticated GitHub call: PAT expired, revoked or missing Contents write (the signed download host's 401/403 is `github_http`) | rotate the PAT (§3b) |
 | `github_rate_limited` | 429, or 403 with `x-ratelimit-remaining: 0` / `retry-after` | retries usually clear it; wait for the next slot |
 | `github_5xx` | GitHub server error | retries usually clear it; githubstatus.com |
 | `github_http` | other non-2xx, a paginated listing that left `api.github.com`, or a 401/403 from the signed download host behind the asset redirect (expired URL, not the PAT) | read the log line (status only); retried; open an issue if it repeats |

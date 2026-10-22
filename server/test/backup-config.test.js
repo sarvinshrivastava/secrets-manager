@@ -167,6 +167,8 @@ describe("parseBackupSettings", () => {
     ["BAR", "AGE-PLUGIN-YUBIKEY-1QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L"],
     ["BAZ", "AGE-PLUGIN-FIDO2-HMAC-1QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L"],
     ["QUX", "age-plugin-yubikey-1qpzry9x8gf2tvdw0s3jn54khce6mua7l"],
+    ["DOT", "AGE-PLUGIN-FOO.BAR_X+Y-1QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L"],
+    ["MIN", "AGE-PLUGIN-YUBIKEY-1QPZRY9X8GF2TVDW0S3JN"],
   ]) {
     it(`private key marker in ${key} → private_key_on_vps`, () => {
       const env = offsiteEnv({ [key]: value });
@@ -181,6 +183,8 @@ describe("parseBackupSettings", () => {
     "/usr/local/bin:/opt/age-plugin-yubikey/bin",
     "/opt/age-plugin-yubikey-1.2.0/bin",
     "/opt/age-plugin-tpm-1.0/bin:/usr/bin",
+    "/usr/lib/age-plugin-x-1qpzry9x8gf/bin",
+    "AGE-PLUGIN-YUBIKEY-1QPZRY9X8GF2TVDW0S3J",
   ]) {
     it(`does not flag the plugin binary path ${p}`, () => {
       const s = parseBackupSettings(offsiteEnv({ PATH: p }));

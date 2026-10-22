@@ -234,6 +234,7 @@ describe("github client", () => {
   for (const [status, headers, code] of [
     [502, {}, "github_5xx"],
     [429, {}, "github_rate_limited"],
+    [403, { "x-ratelimit-remaining": "0" }, "github_rate_limited"],
     [401, {}, "github_http"],
   ]) {
     it(`maps a ${status} on the redirect hop to ${code}`, async () => {

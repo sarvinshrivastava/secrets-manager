@@ -86,7 +86,7 @@ const REPO_RE = /^([A-Za-z0-9-]+)\/([A-Za-z0-9._-]+)$/;
 // /opt/age-plugin-yubikey-1.2/bin do not match.
 const PRIVATE_KEY_RES = [
   /AGE-SECRET-KEY-/i,
-  /AGE-PLUGIN-[A-Z0-9._+-]+-1[02-9AC-HJ-NP-Z]{10,}/i,
+  /AGE-PLUGIN-[A-Z0-9._+-]+-1[02-9AC-HJ-NP-Z]{20,}/i,
 ];
 // Upper bounds keep a typo from turning into a huge loop or array.
 const MAX_KEEP_DAYS = 3650;

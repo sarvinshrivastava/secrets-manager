@@ -7,6 +7,7 @@ import { generateIdentity, identityToRecipient } from "age-encryption";
 import { parseBackupSettings } from "../src/config.js";
 import { createBackupRunner, pushKuma, redact } from "../src/backup/runner.js";
 import { BackupError } from "../src/backup/errors.js";
+import { MAX_OFFSITE_DB_BYTES } from "../src/backup/snapshot.js";
 import { shiftSlot } from "../src/backup/schedule.js";
 import { Database } from "../src/database.js";
 
@@ -488,7 +489,7 @@ describe("runSlot", () => {
     const h = make({
       snapshot: async (_db, opts) => {
         opts.guard();
-        return { file: snapFile, reused: false, counts: { secrets: 1, tokens: 1 }, bytes: 32 * 1024 * 1024 + 1, notes: ["large_db"] };
+        return { file: snapFile, reused: false, counts: { secrets: 1, tokens: 1 }, bytes: MAX_OFFSITE_DB_BYTES + 1, notes: ["large_db"] };
       },
     });
     const res = await settle(h.runner.trigger(SLOT, "scheduled"));
@@ -598,6 +599,16 @@ describe("runSlot", () => {
     expect(res.code).toBe("verify_mismatch");
     expect(h.lines.join("\n")).toContain("cleanup of a mismatched upload failed: github_5xx");
     expectClean(h.lines, h.audits);
+    h.runner.stop();
+  });
+
+  it("a DB of exactly the off-site ceiling is still uploaded", async () => {
+    const h = make({
+      snapshot: async () => ({ file: snapFile, reused: false, counts: { secrets: 1, tokens: 1 }, bytes: MAX_OFFSITE_DB_BYTES, notes: [] }),
+    });
+    const res = await settle(h.runner.trigger(SLOT, "scheduled"));
+    expect(res.status).toBe("success");
+    expect(h.server.calls).toContain("POST upload");
   });
 
   it("a plain Error from the snapshot maps to internal", async () => {
@@ -823,6 +834,47 @@ describe("timers", () => {
       { status: "up", msg: "OK" },
       { status: "down", msg: "slot_asset_foreign" },
     ]);
+    h.runner.stop();
+  });
+
+  it("a down push aborts an up re-send that is already in flight", async () => {
+    const h = make();
+    let resendSignal = null;
+    let ups = 0;
+    h.server.override = (label, url, init) => {
+      if (label !== "KUMA up") return undefined;
+      ups += 1;
+      if (ups === 1) return new Response("no", { status: 500 });
+      resendSignal = init.signal;
+      return () =>
+        new Promise((_, reject) => {
+          init.signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+        });
+    };
+    await settle(h.runner.trigger(shiftSlot(SLOT, -1), "catchup"));
+    await vi.advanceTimersByTimeAsync(60_000); // +1 min: the re-send starts and hangs
+    expect(resendSignal?.aborted).toBe(false);
+    h.server.addGood(SLOT, { label: null });
+    await settle(h.runner.trigger(SLOT, "scheduled"), 1, 200);
+    expect(resendSignal.aborted).toBe(true);
+    await vi.advanceTimersByTimeAsync(30 * 60_000);
+    expect(vi.getTimerCount()).toBe(0); // the chain was not re-armed
+    expect(h.server.kuma.at(-1)).toEqual({ status: "down", msg: "slot_asset_foreign" });
+    h.runner.stop();
+  });
+
+  it("a token_expiring down push cancels a pending up re-send", async () => {
+    const h = make();
+    h.server.override = (label) => (label === "KUMA up" ? new Response("no", { status: 500 }) : undefined);
+    await settle(h.runner.trigger(shiftSlot(SLOT, -1), "catchup"));
+    expect(vi.getTimerCount()).toBe(1);
+    h.server.override = null;
+    h.server.expiration = "2026-10-23 22:30:00 UTC";
+    const res = await settle(h.runner.trigger(SLOT, "scheduled"), 1, 200);
+    expect(res).toMatchObject({ status: "success", code: "token_expiring" });
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(30 * 60_000);
+    expect(h.server.kuma.at(-1)).toEqual({ status: "down", msg: "token_expiring" });
     h.runner.stop();
   });
 
