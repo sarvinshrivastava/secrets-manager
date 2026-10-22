@@ -81,7 +81,9 @@ const DEFAULT_REMOTE_KEEP_DAILY = 30;
 const DEFAULT_REMOTE_KEEP_MONTHLY = 12;
 const REPO_RE = /^([A-Za-z0-9-]+)\/([A-Za-z0-9._-]+)$/;
 // An age private key (AGE-SECRET-KEY-1…, AGE-SECRET-KEY-PQ-1…) or a plugin
-// identity: AGE-PLUGIN-<NAME>-1 followed by a bech32 data run (any case)
+// identity: AGE-PLUGIN-<NAME>-1 followed by a bech32 data run (any case) of
+// at least 20 chars (real identities are far longer; shorter runs match
+// version strings and path segments such as "age-plugin-x-1qpzry9x8gf")
 // (the name may contain hyphens, e.g. FIDO2-HMAC). Binary paths such as
 // /opt/age-plugin-yubikey-1.2/bin do not match.
 const PRIVATE_KEY_RES = [

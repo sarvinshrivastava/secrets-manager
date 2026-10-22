@@ -609,6 +609,8 @@ describe("runSlot", () => {
     const res = await settle(h.runner.trigger(SLOT, "scheduled"));
     expect(res.status).toBe("success");
     expect(h.server.calls).toContain("POST upload");
+    expectClean(h.lines, h.audits);
+    h.runner.stop();
   });
 
   it("a plain Error from the snapshot maps to internal", async () => {
@@ -859,8 +861,34 @@ describe("timers", () => {
     expect(resendSignal.aborted).toBe(true);
     await vi.advanceTimersByTimeAsync(30 * 60_000);
     expect(vi.getTimerCount()).toBe(0); // the chain was not re-armed
+    expect(ups).toBe(2); // the failed first push + the aborted re-send, nothing after
     expect(h.server.kuma.at(-1)).toEqual({ status: "down", msg: "slot_asset_foreign" });
+    expect(h.lines.filter((l) => l.includes("AbortError"))).toEqual([]); // a deliberate abort is not logged as a failure
     h.runner.stop();
+  });
+
+  it("stop() aborts an up re-send already in flight and does not re-arm", async () => {
+    const h = make();
+    let resendSignal = null;
+    let ups = 0;
+    h.server.override = (label, url, init) => {
+      if (label !== "KUMA up") return undefined;
+      ups += 1;
+      if (ups === 1) return new Response("no", { status: 500 });
+      resendSignal = init.signal;
+      return () =>
+        new Promise((_, reject) => {
+          init.signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+        });
+    };
+    await settle(h.runner.trigger(shiftSlot(SLOT, -1), "catchup"));
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(resendSignal?.aborted).toBe(false);
+    h.runner.stop();
+    expect(resendSignal.aborted).toBe(true);
+    await vi.advanceTimersByTimeAsync(30 * 60_000);
+    expect(ups).toBe(2);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("a token_expiring down push cancels a pending up re-send", async () => {

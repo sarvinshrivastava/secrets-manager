@@ -212,14 +212,15 @@ without the nonce, which lives only in this terminal (and, for a moment, in the 
 list, which only root can read, and root already has `.env`). The VPS side reads the value
 the container actually uses (`printenv`, after compose has stripped any quotes). `-r` and
 `cut` make LibreSSL (macOS) and OpenSSL 3 (VPS) print the same bare hex. Only the clipboard
-side drops CR/LF (password managers add them); the VPS side drops just `printenv`'s final
-newline, so a stray CR in the real value still shows as a mismatch. The container must be
-running the current `.env` (deploy after any `.env` edit, §3b). Each command runs only if
-the nonce is set; the two lines must be equal:
+side drops CR (password managers add it); the VPS side drops only LF (`printenv`'s newline;
+an `.env` value cannot contain one), so a stray CR in the real value still shows as a
+mismatch. The container must be running the current `.env` (deploy after any `.env` edit,
+§3b). Pass = two equal 64-hex lines. **Empty output or `nonce missing` = failure**, not a
+match:
 ```sh
-N=$(openssl rand -hex 32) && [ -n "$N" ] && ssh vps "docker exec secret-manager printenv SECRET_MANAGER_MASTER_KEY | tr -d '\n' | openssl dgst -sha256 -hmac $N -r | cut -d' ' -f1"
+N=$(openssl rand -hex 32) && [ -n "$N" ] && ssh vps "docker exec secret-manager printenv SECRET_MANAGER_MASTER_KEY | tr -d '\n' | openssl dgst -sha256 -hmac $N -r | cut -d' ' -f1" || echo "nonce missing or ssh failed" >&2
 # copy the master key from your store to the clipboard, then:
-[ -n "$N" ] && pbpaste | tr -d "\r\n" | openssl dgst -sha256 -hmac "$N" -r | cut -d' ' -f1; pbcopy < /dev/null; unset N
+[ -n "$N" ] && pbpaste | tr -d "\r\n" | openssl dgst -sha256 -hmac "$N" -r | cut -d' ' -f1 || echo "nonce missing" >&2; pbcopy < /dev/null; unset N
 ```
 
 ### 3b. Key, token and monitor handling

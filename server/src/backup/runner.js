@@ -60,6 +60,7 @@ export async function pushKuma(url, status, code, fetchImpl, log, signal) {
     }
     return true;
   } catch (err) {
+    if (signal?.aborted) return false; // cancelled on purpose: not a failure
     log.error(`backup: kuma push failed: ${networkErrorTag(err)}`);
     return false;
   }
@@ -288,8 +289,9 @@ export function createBackupRunner({
     }
   }
 
-  // Cancels a pending "up" re-send AND aborts one already in flight, so a
-  // stale "up" can neither land after a newer push nor re-arm its chain.
+  // Cancels a pending "up" re-send and aborts one already in flight, so a
+  // stale "up" never re-arms its chain. (A request Kuma already received
+  // cannot be recalled; that window is one HTTP round trip.)
   function cancelKumaRetry() {
     if (kumaTimer) clearTimer(kumaTimer);
     kumaTimer = null;
