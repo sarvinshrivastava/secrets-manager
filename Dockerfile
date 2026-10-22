@@ -43,7 +43,7 @@ COPY server/package.json ./server/package.json
 COPY server/src ./server/src
 COPY --from=frontend-build /app/frontend/dist ./frontend/dist
 
-RUN mkdir -p /app/data && chown -R node:node /app
+RUN mkdir -p /app/data /app/backups && chown -R node:node /app
 
 USER node
 

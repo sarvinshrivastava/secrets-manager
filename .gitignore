@@ -15,6 +15,9 @@ data/*.db
 data/*.db-shm
 data/*.db-wal
 
+# In-process vault backups (plaintext SQLite copies). Never commit.
+backups/
+
 # macOS cruft. .DS_Store is currently TRACKED in git — this only stops new ones.
 # Untrack the existing files with (run by a human, not automated):
 #   git rm --cached .DS_Store && git commit -m "chore: untrack .DS_Store"
