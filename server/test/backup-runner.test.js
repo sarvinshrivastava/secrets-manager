@@ -488,7 +488,7 @@ describe("runSlot", () => {
     const h = make({
       snapshot: async (_db, opts) => {
         opts.guard();
-        return { file: snapFile, reused: false, counts: { secrets: 1, tokens: 1 }, bytes: 64 * 1024 * 1024 + 1, notes: ["large_db"] };
+        return { file: snapFile, reused: false, counts: { secrets: 1, tokens: 1 }, bytes: 32 * 1024 * 1024 + 1, notes: ["large_db"] };
       },
     });
     const res = await settle(h.runner.trigger(SLOT, "scheduled"));
@@ -560,6 +560,44 @@ describe("runSlot", () => {
     expect(vi.getTimerCount()).toBe(0);
     await vi.advanceTimersByTimeAsync(60 * 60_000);
     expect(h.snapCalls).toHaveLength(2);
+    h.runner.stop();
+  });
+
+  it("a final failure through another trigger cancels that slot's pending retry", async () => {
+    let call = 0;
+    const h = make({
+      snapshot: async (_db, opts) => {
+        h.snapCalls.push(opts.slot);
+        call += 1;
+        throw new BackupError(call === 1 ? "github_5xx" : "slot_asset_foreign");
+      },
+    });
+    await settle(h.runner.trigger(SLOT, "scheduled"));
+    expect(vi.getTimerCount()).toBe(1);
+    const res = await settle(h.runner.trigger(SLOT, "catchup"));
+    expect(res).toMatchObject({ code: "slot_asset_foreign", final: true });
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(60 * 60_000);
+    expect(h.snapCalls).toHaveLength(2);
+    h.runner.stop();
+  });
+
+  it("a failed cleanup of a mismatched upload is logged with its code only", async () => {
+    const h = make();
+    h.server.override = (label) => {
+      if (label === "POST upload") {
+        return new Response(
+          JSON.stringify({ id: 5, name: `secrets-${SLOT}.db.gz.age`, state: "uploaded", size: 1, label: "x", digest: null }),
+          { status: 201, headers: { "content-type": "application/json" } },
+        );
+      }
+      if (label === "DELETE asset") return new Response(JSON.stringify({ message: `nope ${TOKEN}` }), { status: 500 });
+      return undefined;
+    };
+    const res = await settle(h.runner.trigger(SLOT, "scheduled"));
+    expect(res.code).toBe("verify_mismatch");
+    expect(h.lines.join("\n")).toContain("cleanup of a mismatched upload failed: github_5xx");
+    expectClean(h.lines, h.audits);
   });
 
   it("a plain Error from the snapshot maps to internal", async () => {
@@ -768,6 +806,24 @@ describe("timers", () => {
     expect(h.server.kuma).toHaveLength(3);
     expect(h.server.calls.filter((c) => c === "POST upload")).toHaveLength(1);
     expect(h.audits).toHaveLength(1);
+  });
+
+  it("a later down push cancels a pending up re-send", async () => {
+    const h = make();
+    h.server.override = (label) => (label === "KUMA up" ? new Response("no", { status: 500 }) : undefined);
+    await settle(h.runner.trigger(shiftSlot(SLOT, -1), "catchup"));
+    expect(vi.getTimerCount()).toBe(1); // the +1 min "up" re-send is pending
+    h.server.addGood(SLOT, { label: null }); // slot_asset_foreign: final at once
+    h.server.override = null;
+    const res = await settle(h.runner.trigger(SLOT, "scheduled"), 1, 200);
+    expect(res).toMatchObject({ code: "slot_asset_foreign", final: true });
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(30 * 60_000);
+    expect(h.server.kuma).toEqual([
+      { status: "up", msg: "OK" },
+      { status: "down", msg: "slot_asset_foreign" },
+    ]);
+    h.runner.stop();
   });
 
   it("start() removes a leftover .inflight.tmp even when the slot file exists", () => {

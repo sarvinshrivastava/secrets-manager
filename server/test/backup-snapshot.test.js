@@ -138,12 +138,13 @@ describe("ensureLocalSnapshot", () => {
     await expect(run()).rejects.toMatchObject({ code: "local_failed" });
   });
 
-  it("notes large_db above 32 MB, below the 64 MB off-site ceiling (injected size)", async () => {
-    expect(LARGE_DB_BYTES).toBe(32 * 1024 * 1024);
-    expect(LARGE_DB_BYTES).toBeLessThan(MAX_OFFSITE_DB_BYTES);
-    const res = await run({ sizeOf: () => 32 * 1024 * 1024 + 1 });
+  it("notes large_db above 16 MB, below the 32 MB off-site ceiling (injected size)", async () => {
+    const MB = 1024 * 1024;
+    expect(LARGE_DB_BYTES).toBe(16 * MB);
+    expect(MAX_OFFSITE_DB_BYTES).toBe(32 * MB);
+    const res = await run({ sizeOf: () => 16 * MB + 1 });
     expect(res.notes).toEqual(["large_db"]);
-    const edge = await run({ sizeOf: () => 32 * 1024 * 1024 });
+    const edge = await run({ sizeOf: () => 16 * MB });
     expect(edge.notes).toEqual([]);
   });
 

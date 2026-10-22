@@ -10,10 +10,10 @@ export const CODES = Object.freeze([
   "integrity_failed",
   "local_failed", // any other fs error in the local stage
   "release_not_found", // 404 on the tag: release missing OR the PAT cannot see the repo
-  "github_auth", // 401, or 403 without rate-limit headers
+  "github_auth", // 401, or 403 without rate-limit headers (PAT-authenticated calls only)
   "github_rate_limited", // 429, or 403 with x-ratelimit-remaining: 0 / retry-after
   "github_5xx",
-  "github_http",
+  "github_http", // other non-2xx, incl. 401/403 from the signed download host
   "github_network",
   "verify_mismatch",
   "token_expiring",

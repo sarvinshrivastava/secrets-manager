@@ -166,6 +166,7 @@ describe("parseBackupSettings", () => {
     ["FOO", "AGE-SECRET-KEY-1QQQQ"],
     ["BAR", "AGE-PLUGIN-YUBIKEY-1QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L"],
     ["BAZ", "AGE-PLUGIN-FIDO2-HMAC-1QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L"],
+    ["QUX", "age-plugin-yubikey-1qpzry9x8gf2tvdw0s3jn54khce6mua7l"],
   ]) {
     it(`private key marker in ${key} → private_key_on_vps`, () => {
       const env = offsiteEnv({ [key]: value });

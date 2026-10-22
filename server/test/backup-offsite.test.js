@@ -231,6 +231,25 @@ describe("github client", () => {
     expectClean(lines);
   });
 
+  for (const [status, headers, code] of [
+    [502, {}, "github_5xx"],
+    [429, {}, "github_rate_limited"],
+    [401, {}, "github_http"],
+  ]) {
+    it(`maps a ${status} on the redirect hop to ${code}`, async () => {
+      const { c } = client((url) => {
+        if (url === LOCATION) return new Response("x", { status, headers });
+        return new Response(null, { status: 302, headers: { location: LOCATION } });
+      });
+      await expect(c.downloadAssetSha256(9)).rejects.toMatchObject({ code });
+    });
+  }
+
+  it("keeps github_auth for a 401 on the authenticated first download hop", async () => {
+    const { c } = client(() => jsonRes({ message: "Bad credentials" }, 401));
+    await expect(c.downloadAssetSha256(9)).rejects.toMatchObject({ code: "github_auth" });
+  });
+
   it("treats delete 204 and 404 as done", async () => {
     let status = 204;
     const { c, calls } = client(() => new Response(null, { status }));

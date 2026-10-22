@@ -211,13 +211,14 @@ an HMAC under a throwaway random nonce: the printed hex is useless for guessing 
 without the nonce, which lives only in this terminal (and, for a moment, in the VPS process
 list, which only root can read, and root already has `.env`). The VPS side reads the value
 the container actually uses (`printenv`, after compose has stripped any quotes). `-r` and
-`cut` make LibreSSL (macOS) and OpenSSL 3 (VPS) print the same bare hex; the two lines must
-be equal:
+`cut` make LibreSSL (macOS) and OpenSSL 3 (VPS) print the same bare hex; trailing CR/LF from
+a password manager are stripped. The container must be running the current `.env` (deploy
+after any `.env` edit, §3b). The two lines must be equal:
 ```sh
-N=$(openssl rand -hex 32)
-ssh vps "docker exec secret-manager printenv SECRET_MANAGER_MASTER_KEY | tr -d '\n' | openssl dgst -sha256 -hmac $N -r | cut -d' ' -f1"
+N=$(openssl rand -hex 32); : "${N:?nonce generation failed}"
+ssh vps "docker exec secret-manager printenv SECRET_MANAGER_MASTER_KEY | tr -d '\r\n' | openssl dgst -sha256 -hmac $N -r | cut -d' ' -f1"
 # copy the master key from your store to the clipboard, then:
-pbpaste | tr -d "\n" | openssl dgst -sha256 -hmac "$N" -r | cut -d' ' -f1; pbcopy < /dev/null; unset N
+pbpaste | tr -d "\r\n" | openssl dgst -sha256 -hmac "$N" -r | cut -d' ' -f1; pbcopy < /dev/null; unset N
 ```
 
 ### 3b. Key, token and monitor handling
@@ -247,7 +248,8 @@ pbpaste | tr -d "\n" | openssl dgst -sha256 -hmac "$N" -r | cut -d' ' -f1; pbcop
   pair, replace the recipient, deploy, delete the assets made for the lost key, and redo the
   handoff and decrypt test.
 - **The private key never goes on the VPS.** Any `.env` value containing
-  `AGE-SECRET-KEY-` or `AGE-PLUGIN-` disables off-site (`private_key_on_vps`) and pages.
+  `AGE-SECRET-KEY-` or a plugin identity (`AGE-PLUGIN-<NAME>-1…`) disables off-site
+  (`private_key_on_vps`) and pages.
 - **Disabling off-site:** remove the recipient, repo, token and push-URL lines
   (`RELEASE_TAG` may stay), deploy, pause the monitor. Removing only some of the four while
   a push URL remains is `config_invalid` and pages; removing only the push URL also makes
@@ -274,12 +276,12 @@ The audit row's `details.code` (and the Kuma `msg` on a final failure).
 | `github_auth` | 401, or 403 without rate-limit headers: PAT expired, revoked or missing Contents write | rotate the PAT (§3b) |
 | `github_rate_limited` | 429, or 403 with `x-ratelimit-remaining: 0` / `retry-after` | retries usually clear it; wait for the next slot |
 | `github_5xx` | GitHub server error | retries usually clear it; githubstatus.com |
-| `github_http` | other non-2xx, or a paginated listing that left `api.github.com` | read the log line (status only); open an issue if it repeats |
+| `github_http` | other non-2xx, a paginated listing that left `api.github.com`, or a 401/403 from the signed download host behind the asset redirect (expired URL, not the PAT) | read the log line (status only); retried; open an issue if it repeats |
 | `github_network` | DNS/TCP/TLS/timeout to GitHub | check egress from the container (`docker exec secret-manager node -e "fetch('https://api.github.com').then(r=>console.log(r.status))"`) |
 | `verify_mismatch` | the uploaded asset's digest/size/label/download hash does not match | retried; if it repeats, inspect the release assets |
 | `token_expiring` | the PAT expires within 7 days (the copy **was** made) | rotate the PAT (§3b) |
 | `slot_asset_foreign` | the slot's asset exists, uploaded, without our `sha256-` label (made by hand?) | inspect it; delete it in the release UI if it is not needed; the next slot proceeds |
-| `db_too_large` | the DB is above 64 MB; the off-site copy is buffered in memory (~3× the DB) and would OOM the 256m container, so it is refused (the local copy is still made) | raise `mem_limit` and the limit in `snapshot.js`, or move the off-site path to file streaming |
+| `db_too_large` | the DB is above 32 MB; the off-site copy is buffered in memory (~3× the DB) and would OOM the 256m container, so it is refused (the local copy is still made) | raise `mem_limit` and the limit in `snapshot.js`, or move the off-site path to file streaming |
 | `timeout` | the run exceeded 20 min, or was cut by a shutdown | logs; retried |
 | `internal` | a bug (the log has only the error class name) | logs; open an issue |
 
@@ -290,7 +292,7 @@ Notes (on an otherwise successful run, `details.notes`):
 | `retention_failed` | a remote retention delete/list failed | none; the next slot repeats it |
 | `kuma_failed` | the `up` push failed; re-sent at +1/+5/+15 min | check Kuma reachability from the container |
 | `local_rotation_failed` | an old local file could not be deleted | `ls -l backups/` |
-| `large_db` | the DB is above 32 MB (warning; at 64 MB the off-site copy stops with `db_too_large`) | plan the move to file streaming or a higher `mem_limit` |
+| `large_db` | the DB is above 16 MB (warning; above 32 MB the off-site copy stops with `db_too_large`) | plan the move to file streaming or a higher `mem_limit` |
 
 ---
 

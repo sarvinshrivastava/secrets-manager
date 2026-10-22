@@ -84,13 +84,12 @@ export async function discardBody(res) {
 // 401/403 means an expired or refused URL, not a PAT problem.
 function statusError(res, op, auth = true) {
   const s = res.status;
-  if (!auth) {
-    return new BackupError(s >= 500 ? "github_5xx" : "github_http", { status: s });
-  }
   const h = (k) => res.headers.get(k);
   let code;
   if (s === 429 || (s === 403 && (h("x-ratelimit-remaining") === "0" || h("retry-after")))) {
     code = "github_rate_limited";
+  } else if (!auth) {
+    code = s >= 500 ? "github_5xx" : "github_http";
   } else if (s === 401 || s === 403) {
     code = "github_auth";
   } else if (s === 404 && op === "getRelease") {
@@ -133,10 +132,12 @@ export function createGithubClient({
     }
   }
 
-  // `readBody: false` for the unauthenticated redirect hop: its body could
-  // echo the signed URL, so only the status is logged.
-  async function failWith(res, op, { readBody = true } = {}) {
-    const err = statusError(res, op, readBody);
+  // `auth: false` = the unauthenticated redirect hop: its body could echo the
+  // signed URL, so only the status is logged, and its 401/403 says nothing
+  // about the PAT.
+  async function failWith(res, op, { auth = true } = {}) {
+    const err = statusError(res, op, auth);
+    const readBody = auth;
     let message = "";
     if (readBody) {
       try {
@@ -301,7 +302,7 @@ export function createGithubClient({
         });
       }
       if (!res.ok) {
-        throw await failWith(res, "downloadAsset", { readBody: !followed });
+        throw await failWith(res, "downloadAsset", { auth: !followed });
       }
       const hash = nodeCrypto.createHash("sha256");
       try {

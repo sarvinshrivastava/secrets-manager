@@ -230,7 +230,7 @@ export function createBackupRunner({
         // it cannot be counted as a good copy later.
         if (err?.code === "verify_mismatch" && !run.abandoned && !closed) {
           await client.deleteAsset(asset.id).catch((e) => {
-            say("warn", `backup: cleanup of a mismatched upload failed: ${e?.code ?? e?.name}`);
+            say("warn", `backup: cleanup of a mismatched upload failed: ${e?.code ?? e?.name ?? "error"}`);
           });
         }
         throw err;
@@ -283,6 +283,11 @@ export function createBackupRunner({
     } catch (err) {
       say("error", `backup: audit write failed: ${err?.name ?? "error"}`);
     }
+  }
+
+  function cancelKumaRetry() {
+    if (kumaTimer) clearTimer(kumaTimer);
+    kumaTimer = null;
   }
 
   function scheduleKumaRetry(index = 0) {
@@ -374,6 +379,7 @@ export function createBackupRunner({
       clearRetry(slot);
       if (outcome.kuma && pushUrl) {
         const [status, msg] = outcome.kuma;
+        cancelKumaRetry(); // a newer push supersedes a pending "up" re-send
         const ok = await pushKuma(pushUrl, status, msg, fetchImpl, log);
         if (!ok && status === "up") {
           ctx.notes.push("kuma_failed");
@@ -395,7 +401,10 @@ export function createBackupRunner({
     if (final) {
       attempts.delete(slot);
       clearRetry(slot);
-      if (pushUrl) await pushKuma(pushUrl, "down", error.code, fetchImpl, log);
+      if (pushUrl) {
+        cancelKumaRetry(); // a stale "up" re-send must not hide this page
+        await pushKuma(pushUrl, "down", error.code, fetchImpl, log);
+      }
     } else {
       scheduleRetry(slot, attempt);
     }

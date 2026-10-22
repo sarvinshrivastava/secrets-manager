@@ -80,13 +80,13 @@ const DEFAULT_KEEP_DAYS = 14;
 const DEFAULT_REMOTE_KEEP_DAILY = 30;
 const DEFAULT_REMOTE_KEEP_MONTHLY = 12;
 const REPO_RE = /^([A-Za-z0-9-]+)\/([A-Za-z0-9._-]+)$/;
-// An age private key (AGE-SECRET-KEY-1…, AGE-SECRET-KEY-PQ-1…, any case) or a
-// plugin identity: upper-case AGE-PLUGIN-<NAME>-1 followed by a bech32 data run
+// An age private key (AGE-SECRET-KEY-1…, AGE-SECRET-KEY-PQ-1…) or a plugin
+// identity: AGE-PLUGIN-<NAME>-1 followed by a bech32 data run (any case)
 // (the name may contain hyphens, e.g. FIDO2-HMAC). Binary paths such as
 // /opt/age-plugin-yubikey-1.2/bin do not match.
 const PRIVATE_KEY_RES = [
   /AGE-SECRET-KEY-/i,
-  /AGE-PLUGIN-[A-Z0-9-]+-1[02-9AC-HJ-NP-Z]{20,}/,
+  /AGE-PLUGIN-[A-Z0-9._+-]+-1[02-9AC-HJ-NP-Z]{10,}/i,
 ];
 // Upper bounds keep a typo from turning into a huge loop or array.
 const MAX_KEEP_DAYS = 3650;
