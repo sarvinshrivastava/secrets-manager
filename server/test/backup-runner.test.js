@@ -3,7 +3,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import nodeCrypto from "node:crypto";
-import { generateIdentity, identityToRecipient } from "age-encryption";
+import { Decrypter, generateIdentity, identityToRecipient } from "age-encryption";
+import zlib from "node:zlib";
+import DatabaseDriver from "better-sqlite3";
 import { parseBackupSettings } from "../src/config.js";
 import { createBackupRunner, pushKuma, redact } from "../src/backup/runner.js";
 import { BackupError } from "../src/backup/errors.js";
@@ -16,9 +18,11 @@ const PUSH = "https://kuma.example/api/push/PUSHSECRET";
 const SLOT = "20261020";
 const sha = (b) => nodeCrypto.createHash("sha256").update(b).digest("hex");
 let RECIPIENT;
+let IDENTITY;
 
 beforeAll(async () => {
-  RECIPIENT = await identityToRecipient(await generateIdentity());
+  IDENTITY = await generateIdentity();
+  RECIPIENT = await identityToRecipient(IDENTITY);
 });
 
 // ── fake GitHub + Kuma ─────────────────────────────────────────────────────
@@ -51,6 +55,7 @@ function fakeServer() {
     return a;
   };
   s.signals = [];
+  s.uploads = [];
   s.fetch = async (url, init = {}) => {
     s.signals.push(init.signal);
     const u = new URL(url);
@@ -79,6 +84,7 @@ function fakeServer() {
     if (label === "GET list") return json(s.assets);
     if (label === "POST upload") {
       const body = Buffer.from(init.body);
+      s.uploads.push(body);
       const hex = sha(body);
       const a = {
         id: s.nextId++,
@@ -936,6 +942,94 @@ describe("timers", () => {
     expect(h.audits).toEqual([]);
     expect(h.server.calls).toEqual([]);
     expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+describe("end to end (real Database + real snapshot)", () => {
+  const SECRET_KEY_NAME = "PROD_STRIPE_SECRET_KEY_NAME";
+  const SECRET_VALUE = Buffer.from("sk_live_ULTRASECRETVALUE_123");
+
+  function realRunner(server, live) {
+    const lines = [];
+    const push = (...a) => lines.push(a.join(" "));
+    const runner = createBackupRunner({
+      db: live,
+      settings: { dbPath: path.join(root, "live", "secrets.db"), backup: parseBackupSettings(env()) },
+      fetchImpl: server.fetch,
+      log: { info: push, warn: push, error: push },
+    });
+    return { runner, lines };
+  }
+
+  it("backs up, uploads a decryptable copy, and never leaks secret names or values", async () => {
+    const live = new Database(path.join(root, "live", "secrets.db"));
+    try {
+      live.createSecret("Root", SECRET_KEY_NAME, Buffer.alloc(12, 1), SECRET_VALUE);
+      live.createToken("ci", "read", Buffer.alloc(16), Buffer.alloc(32));
+      const server = fakeServer();
+      const { runner, lines } = realRunner(server, live);
+      const res = await settle(runner.trigger(SLOT, "scheduled"), 50, 400);
+      expect(res.status).toBe("success");
+
+      // Local copy: verified, 0600, self-contained.
+      const local = path.join(dir, `secrets-${SLOT}.db`);
+      expect(fs.statSync(local).mode & 0o777).toBe(0o600);
+      expect(fs.readdirSync(dir)).toEqual([`secrets-${SLOT}.db`]);
+
+      // Off-site copy: decrypt with the identity, gunzip, open, counts match.
+      const upload = server.assets.find((a) => a.name === `secrets-${SLOT}.db.gz.age`);
+      expect(upload).toBeTruthy();
+      const bodyCall = server.uploads[0];
+      const d = new Decrypter();
+      d.addIdentity(IDENTITY);
+      const plain = zlib.gunzipSync(await d.decrypt(new Uint8Array(bodyCall)));
+      const restored = path.join(root, "restored.db");
+      fs.writeFileSync(restored, plain);
+      const h = new DatabaseDriver(restored, { readonly: true });
+      expect(h.pragma("integrity_check")).toEqual([{ integrity_check: "ok" }]);
+      expect(h.prepare("SELECT count(*) AS n FROM secrets").get().n).toBe(1);
+      expect(h.prepare("SELECT key FROM secrets").get().key).toBe(SECRET_KEY_NAME);
+      h.close();
+
+      // Audit row (real DB) and every log line: no name, value, token or push URL.
+      const rows = live.db.prepare("SELECT * FROM audit_logs WHERE action = 'backup'").all();
+      expect(rows).toHaveLength(1);
+      expect(JSON.parse(rows[0].details)).toMatchObject({ secrets: 1, tokens: 1, stage: "done" });
+      const everything = lines.join("\n") + JSON.stringify(rows);
+      for (const bad of [SECRET_KEY_NAME, SECRET_VALUE.toString(), TOKEN, PUSH, "PUSHSECRET"]) {
+        expect(everything).not.toContain(bad);
+      }
+      runner.stop();
+    } finally {
+      live.db.close();
+    }
+  });
+
+  it("a 401 on upload is retried twice, then pages down github_auth; the local copy stays", async () => {
+    const live = new Database(path.join(root, "live", "secrets.db"));
+    try {
+      const server = fakeServer();
+      server.override = (label) =>
+        label === "POST upload" ? new Response(JSON.stringify({ message: "Bad credentials" }), { status: 401 }) : undefined;
+      const { runner } = realRunner(server, live);
+      await settle(runner.trigger(SLOT, "scheduled"), 50, 400);
+      await vi.advanceTimersByTimeAsync(15 * 60_000);
+      await settle(runner.idle(), 50, 400);
+      await vi.advanceTimersByTimeAsync(30 * 60_000);
+      await settle(runner.idle(), 50, 400);
+      expect(server.calls.filter((c) => c === "POST upload")).toHaveLength(3);
+      expect(server.kuma).toEqual([{ status: "down", msg: "github_auth" }]);
+      expect(fs.existsSync(path.join(dir, `secrets-${SLOT}.db`))).toBe(true);
+      const rows = live.db.prepare("SELECT status, details FROM audit_logs WHERE action = 'backup'").all();
+      expect(rows.map((r) => [r.status, JSON.parse(r.details).attempt])).toEqual([
+        ["error", 1],
+        ["error", 2],
+        ["error", 3],
+      ]);
+      runner.stop();
+    } finally {
+      live.db.close();
+    }
   });
 });
 
