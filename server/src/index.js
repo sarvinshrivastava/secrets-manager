@@ -5,6 +5,7 @@ import { Database } from "./database.js";
 import { RateLimiter } from "./rate-limit.js";
 import { createApp } from "./app.js";
 import { assertBootstrapTokenFormat } from "./utils.js";
+import { createBackupRunner } from "./backup/runner.js";
 
 // ── PBKDF2 master key migration ────────────────────────────────────────────
 // Re-encrypt any secrets still under the old SHA256-derived key. Iterates
@@ -72,6 +73,26 @@ export function migrateEncryptionIfNeeded(db, crypto) {
   migrateTx(rows);
 
   return { migrated, alreadyOk, failed };
+}
+
+// ── Backups ─────────────────────────────────────────────────────────────────
+// Never lets a backup problem stop the vault from booting: every CI depends on
+// it. Returns the started runner, or null when disabled or when it failed to
+// start (logged with the error name only).
+export function startBackups(settings, db, deps = {}) {
+  try {
+    if (!settings.backup?.enabled) {
+      if (settings.backup?.error) {
+        console.error(`backup disabled: ${settings.backup.error}`);
+      }
+      return null;
+    }
+    const { createBackupRunner: create = createBackupRunner, ...rest } = deps;
+    return create({ db, settings, ...rest }).start();
+  } catch (err) {
+    console.error(`backup start failed: ${err?.name ?? "Error"}`);
+    return null;
+  }
 }
 
 // ── Boot ────────────────────────────────────────────────────────────────────
@@ -152,6 +173,8 @@ function main() {
   const pruneTimer = setInterval(pruneAuditLogs, 24 * 60 * 60 * 1000);
   pruneTimer.unref();
 
+  const backupRunner = startBackups(settings, db);
+
   // Start HTTP server
   const app = createApp(settings, db, crypto, rateLimiter);
   const server = app.listen(settings.port, settings.host, () => {
@@ -165,6 +188,8 @@ function main() {
   function shutdown(signal) {
     if (shuttingDown) return;
     shuttingDown = true;
+    // Before server.close → db.close: no backup audit write hits a closed DB.
+    backupRunner?.stop();
     console.info(`${signal} received, draining in-flight requests...`);
     server.close(() => {
       try {

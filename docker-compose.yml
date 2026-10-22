@@ -42,6 +42,12 @@ services:
     #     mkdir -p data && chown 1000:1000 data
     volumes:
       - ./data:/app/data
+      # In-process daily backup (RUNBOOK §3): its OWN mount, never ./data, so a
+      # restore or a wipe of one cannot take the other with it. Plaintext
+      # SQLite copies (secret values stay AES-GCM under the master key). The
+      # deploy workflow creates it as 1000:1000 0700 before `compose up`; on a
+      # fresh box by hand: install -d -m 700 -o 1000 -g 1000 backups
+      - ./backups:/app/backups
     healthcheck:
       # `curl` is NOT present in node:22-bookworm-slim, so a curl-based check can
       # never pass and the container stays permanently `unhealthy`. Node 22 ships

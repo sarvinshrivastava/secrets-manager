@@ -221,6 +221,14 @@ jobs:
               exit 1
             }
 
+            # ---- 4b. In-process backup dir --------------------------------
+            # The vault's daily backup (RUNBOOK §3) writes to the ./backups bind
+            # mount as uid 1000. A bind-mounted dir that does not exist is
+            # created root-owned by Docker, so create it here first. `install
+            # -d` also fixes the owner/mode of an existing dir.
+            echo "==> ensuring $APP_DIR/backups (1000:1000, 0700)"
+            install -d -m 700 -o 1000 -g 1000 "$APP_DIR/backups" || rollback
+
             # ---- 5. Build and start --------------------------------------
             echo "==> docker compose up --build -d"
             docker compose up --build -d || rollback
@@ -290,6 +298,7 @@ jobs:
             echo "|---|---|"
             echo "| Ref requested | \`${{ inputs.ref }}\` |"
             echo "| Backup skipped | \`${{ inputs.skip_backup }}\` |"
+            echo "| Backup dir | \`backups/\` ensured (1000:1000, 0700) before compose up |"
             echo "| Triggered by | @${{ github.actor }} |"
             echo "| Result | \`${{ job.status }}\` |"
             echo ""
