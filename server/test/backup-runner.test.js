@@ -1071,6 +1071,23 @@ describe("helpers", () => {
     expect(lines).toEqual(["backup: kuma push failed: 503", "backup: kuma push failed: ECONNREFUSED"]);
   });
 
+  it("pushKuma still logs a real failure when its signal is live", async () => {
+    const lines = [];
+    const log = { error: (m) => lines.push(m) };
+    const ok = await pushKuma(
+      PUSH,
+      "up",
+      "OK",
+      async () => {
+        throw new TypeError("fetch failed", { cause: { code: "ECONNREFUSED" } });
+      },
+      log,
+      new AbortController().signal,
+    );
+    expect(ok).toBe(false);
+    expect(lines).toEqual(["backup: kuma push failed: ECONNREFUSED"]);
+  });
+
   it("redact replaces each secret", () => {
     expect(redact(`a ${TOKEN} b /api/push/PUSHSECRET`, [TOKEN, "/api/push/PUSHSECRET", null])).toBe(
       "a [redacted] b [redacted]",

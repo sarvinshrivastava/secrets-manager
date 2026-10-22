@@ -208,19 +208,19 @@ Repeat steps 2–3 and 6 alone as a **decrypt test** (suggested quarterly): pass
 both counts equal the slot's audit row. The decrypt test does not need the master key, so
 **check the stored master key too while the VPS still exists** (own terminal). It compares
 an HMAC under a throwaway random nonce: the printed hex is useless for guessing the key
-without the nonce, which lives only in this terminal (and, for a moment, in the VPS process
-list, which only root can read, and root already has `.env`). The VPS side reads the value
-the container actually uses (`printenv`, after compose has stripped any quotes). `-r` and
-`cut` make LibreSSL (macOS) and OpenSSL 3 (VPS) print the same bare hex. Only the clipboard
-side drops CR (password managers add it); the VPS side drops only LF (`printenv`'s newline;
-an `.env` value cannot contain one), so a stray CR in the real value still shows as a
-mismatch. The container must be running the current `.env` (deploy after any `.env` edit,
-§3b). Pass = two equal 64-hex lines. **Empty output or `nonce missing` = failure**, not a
-match:
+without the nonce, which lives only in this terminal (and, for a moment, in the host process
+list: not visible to containers, and the VPS has no other users). The VPS side reads the
+value the container actually uses (`printenv`, after compose has stripped any quotes); if
+that read fails or is empty it prints nothing rather than the hash of an empty string. `-r`
+and `cut` make LibreSSL (macOS) and OpenSSL 3 (VPS) print the same bare hex. Only the
+clipboard side drops CR (password managers add it); the VPS side drops only `printenv`'s
+final newline (`$(…)`), so a stray CR in the real value still shows as a mismatch. The
+container must be running the current `.env` (deploy after any `.env` edit, §3b). Pass = two
+equal 64-hex lines. **Empty output or an error line = failure**, not a match:
 ```sh
-N=$(openssl rand -hex 32) && [ -n "$N" ] && ssh vps "docker exec secret-manager printenv SECRET_MANAGER_MASTER_KEY | tr -d '\n' | openssl dgst -sha256 -hmac $N -r | cut -d' ' -f1" || echo "nonce missing or ssh failed" >&2
+N=$(openssl rand -hex 32) && [ -n "$N" ] && ssh vps "V=\$(docker exec secret-manager printenv SECRET_MANAGER_MASTER_KEY) && [ -n \"\$V\" ] && printf %s \"\$V\" | openssl dgst -sha256 -hmac $N -r | cut -d' ' -f1" || echo "nonce missing, ssh failed or no key read" >&2
 # copy the master key from your store to the clipboard, then:
-[ -n "$N" ] && pbpaste | tr -d "\r\n" | openssl dgst -sha256 -hmac "$N" -r | cut -d' ' -f1 || echo "nonce missing" >&2; pbcopy < /dev/null; unset N
+[ -n "$N" ] && [ -n "$(pbpaste)" ] && pbpaste | tr -d "\r\n" | openssl dgst -sha256 -hmac "$N" -r | cut -d' ' -f1 || echo "nonce missing or clipboard empty" >&2; pbcopy < /dev/null; unset N
 ```
 
 ### 3b. Key, token and monitor handling
