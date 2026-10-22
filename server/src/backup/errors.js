@@ -55,12 +55,28 @@ function isFsError(err) {
   return typeof err?.code === "string" && typeof err?.syscall === "string";
 }
 
+export function isDiskFull(err) {
+  return err?.code === "ENOSPC" || err?.code === "SQLITE_FULL";
+}
+
+// Replace every non-empty secret in `text` with "[redacted]".
+export function redact(text, secrets) {
+  let out = String(text ?? "");
+  for (const s of secrets) if (s) out = out.split(s).join("[redacted]");
+  return out;
+}
+
+// Loggable tag for a failed fetch or stream: the network error code (e.g.
+// ECONNRESET) when there is one, else the error name. Never a message or URL.
+export function networkErrorTag(err) {
+  return err?.cause?.code ?? err?.name ?? "error";
+}
+
 // Map anything thrown into a BackupError. `stage` is "local" (fs work around
 // the snapshot), "snapshot" (db.backup itself) or anything else.
 export function toBackupError(err, stage) {
   if (err instanceof BackupError) return err;
-  const code = err?.code;
-  if (code === "ENOSPC" || code === "SQLITE_FULL") {
+  if (isDiskFull(err)) {
     return new BackupError("disk_low", { cause: err });
   }
   if (stage === "local" || stage === "snapshot") {

@@ -82,8 +82,7 @@ export function migrateEncryptionIfNeeded(db, crypto) {
 export function startBackups(settings, db, deps = {}) {
   try {
     if (!settings.backup?.enabled) return null;
-    const create = deps.createBackupRunner ?? createBackupRunner;
-    const { createBackupRunner: _omit, ...rest } = deps;
+    const { createBackupRunner: create = createBackupRunner, ...rest } = deps;
     return create({ db, settings, ...rest }).start();
   } catch (err) {
     console.error(`backup start failed: ${err?.name ?? "Error"}`);

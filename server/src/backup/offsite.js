@@ -6,7 +6,7 @@ import zlib from "node:zlib";
 import nodeCrypto from "node:crypto";
 import { Readable, Transform, addAbortSignal, compose } from "node:stream";
 import { Encrypter } from "age-encryption";
-import { BackupError } from "./errors.js";
+import { BackupError, networkErrorTag, redact } from "./errors.js";
 
 const API = "https://api.github.com";
 const UPLOADS = "https://uploads.github.com";
@@ -63,12 +63,6 @@ export function parseTokenExpiration(value) {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
-function redactText(text, secrets) {
-  let out = String(text ?? "");
-  for (const s of secrets) if (s) out = out.split(s).join("[redacted]");
-  return out;
-}
-
 function nextLink(header) {
   for (const part of String(header ?? "").split(",")) {
     const m = /<([^>]+)>\s*;\s*rel="next"/.exec(part);
@@ -77,7 +71,8 @@ function nextLink(header) {
   return null;
 }
 
-async function discard(res) {
+// Release a response body we do not read.
+export async function discardBody(res) {
   try {
     await res.body?.cancel();
   } catch {
@@ -112,7 +107,8 @@ export function createGithubClient({
   log = console,
   signal,
 }) {
-  const base = `${API}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
+  const repoPath = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
+  const base = `${API}${repoPath}`;
   let tokenExpiresAt = null;
   let expiryWarned = false;
 
@@ -141,9 +137,16 @@ export function createGithubClient({
     } catch {
       /* no JSON body */
     }
-    const clean = redactText(message, [token]).slice(0, MESSAGE_MAX);
+    const clean = redact(message, [token]).slice(0, MESSAGE_MAX);
     log.error(`backup: github ${op} failed: ${res.status} ${clean}`.trim());
     return err;
+  }
+
+  // An aborted run reports timeout; anything else is a logged network error.
+  function networkFailure(op, err) {
+    if (signal?.aborted) return new BackupError("timeout", { cause: err });
+    log.error(`backup: github ${op} failed: ${networkErrorTag(err)}`);
+    return new BackupError("github_network", { cause: err });
   }
 
   async function send(op, url, init, timeoutMs, { auth = true } = {}) {
@@ -162,11 +165,7 @@ export function createGithubClient({
         signal: init.signal ?? signalFor(timeoutMs),
       });
     } catch (err) {
-      if (signal?.aborted) throw new BackupError("timeout", { cause: err });
-      log.error(
-        `backup: github ${op} failed: ${err?.cause?.code ?? err?.name ?? "error"}`,
-      );
-      throw new BackupError("github_network", { cause: err });
+      throw networkFailure(op, err);
     }
     if (auth) noteExpiry(res);
     return res;
@@ -229,9 +228,7 @@ export function createGithubClient({
     },
 
     async uploadAsset(releaseId, name, bytes, sha256) {
-      const u = new URL(
-        `${UPLOADS}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/releases/${releaseId}/assets`,
-      );
+      const u = new URL(`${UPLOADS}${repoPath}/releases/${releaseId}/assets`);
       u.searchParams.set("name", name);
       u.searchParams.set("label", `sha256-${sha256}`);
       return json(
@@ -258,7 +255,7 @@ export function createGithubClient({
         API_TIMEOUT_MS,
       );
       if (res.status === 204 || res.status === 404) {
-        await discard(res);
+        await discardBody(res);
         return;
       }
       throw await failWith(res, "deleteAsset");
@@ -267,44 +264,31 @@ export function createGithubClient({
     // The redirect target is a signed, short-lived capability: it is fetched
     // once without Authorization and never logged.
     async downloadAssetSha256(id) {
-      const chain = signalFor(TRANSFER_TIMEOUT_MS);
+      const download = {
+        method: "GET",
+        headers: { Accept: "application/octet-stream" },
+        signal: signalFor(TRANSFER_TIMEOUT_MS), // one budget for both hops
+      };
       let res = await send(
         "downloadAsset",
         `${base}/releases/assets/${id}`,
-        {
-          method: "GET",
-          headers: { Accept: "application/octet-stream" },
-          redirect: "manual",
-          signal: chain,
-        },
+        { ...download, redirect: "manual" },
         TRANSFER_TIMEOUT_MS,
       );
       if (res.status >= 300 && res.status < 400) {
         const location = res.headers.get("location");
-        await discard(res);
+        await discardBody(res);
         if (!location) throw new BackupError("github_http", { status: res.status });
-        res = await send(
-          "downloadAsset",
-          location,
-          {
-            method: "GET",
-            headers: { Accept: "application/octet-stream" },
-            signal: chain,
-          },
-          TRANSFER_TIMEOUT_MS,
-          { auth: false },
-        );
+        res = await send("downloadAsset", location, download, TRANSFER_TIMEOUT_MS, {
+          auth: false,
+        });
       }
       if (!res.ok) throw await failWith(res, "downloadAsset");
       const hash = nodeCrypto.createHash("sha256");
       try {
         for await (const chunk of res.body) hash.update(chunk);
       } catch (err) {
-        if (signal?.aborted) throw new BackupError("timeout", { cause: err });
-        log.error(
-          `backup: github downloadAsset failed: ${err?.cause?.code ?? err?.name ?? "error"}`,
-        );
-        throw new BackupError("github_network", { cause: err });
+        throw networkFailure("downloadAsset", err);
       }
       return hash.digest("hex");
     },

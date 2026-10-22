@@ -128,20 +128,18 @@ export function parseBackupSettings(env = {}) {
     ? rawDir
     : path.resolve(__dirname, "../../", rawDir);
 
-  const localErrors = [];
-  let time = parseUtcTime(env.SECRET_MANAGER_BACKUP_UTC_TIME || DEFAULT_BACKUP_TIME);
-  if (!time) {
-    time = parseUtcTime(DEFAULT_BACKUP_TIME);
-    localErrors.push("config_invalid");
-  }
-  let keepDays = positiveIntOrNull(
+  // An invalid local key falls back to its default and is reported once.
+  const parsedTime = parseUtcTime(
+    env.SECRET_MANAGER_BACKUP_UTC_TIME || DEFAULT_BACKUP_TIME,
+  );
+  const parsedKeepDays = positiveIntOrNull(
     env.SECRET_MANAGER_BACKUP_KEEP_DAYS,
     DEFAULT_KEEP_DAYS,
   );
-  if (keepDays === null) {
-    keepDays = DEFAULT_KEEP_DAYS;
-    if (!localErrors.includes("config_invalid")) localErrors.push("config_invalid");
-  }
+  const localValid = parsedTime !== null && parsedKeepDays !== null;
+  const time = parsedTime ?? parseUtcTime(DEFAULT_BACKUP_TIME);
+  const keepDays = parsedKeepDays ?? DEFAULT_KEEP_DAYS;
+  const localErrors = localValid ? [] : ["config_invalid"];
 
   const result = {
     enabled: true,

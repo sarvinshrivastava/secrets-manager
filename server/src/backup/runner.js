@@ -4,7 +4,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { monitorEventLoopDelay } from "node:perf_hooks";
-import { BackupError, toBackupError } from "./errors.js";
+import { BackupError, networkErrorTag, redact, toBackupError } from "./errors.js";
 import {
   dueSlot,
   nextSlotStart,
@@ -18,7 +18,12 @@ import {
   selectLocalDeletions,
   selectRemoteDeletions,
 } from "./retention.js";
-import { createGithubClient, encryptSnapshot, verifyAsset } from "./offsite.js";
+import {
+  createGithubClient,
+  discardBody,
+  encryptSnapshot,
+  verifyAsset,
+} from "./offsite.js";
 
 export const CATCHUP_DELAY_MS = 120_000;
 export const KUMA_RETRY_OFFSETS_MS = [60_000, 300_000, 900_000];
@@ -27,11 +32,7 @@ const MAX_ATTEMPTS = 1 + RETRY_DELAYS_MS.length;
 const TOKEN_EXPIRY_WARN_MS = 7 * 24 * 60 * 60 * 1000;
 const AUDIT_TOKEN_NAME = "system:backup"; // ':' is impossible in a real token name
 
-export function redact(text, secrets) {
-  let out = String(text ?? "");
-  for (const s of secrets) if (s) out = out.split(s).join("[redacted]");
-  return out;
-}
+export { redact };
 
 // The push URL is a capability: it is never logged, only the HTTP status or
 // the network error code is.
@@ -45,20 +46,14 @@ export async function pushKuma(url, status, code, fetchImpl, log) {
       method: "GET",
       signal: AbortSignal.timeout(KUMA_TIMEOUT_MS),
     });
-    try {
-      await res.body?.cancel();
-    } catch {
-      /* already consumed */
-    }
+    await discardBody(res);
     if (!res.ok) {
       log.error(`backup: kuma push failed: ${res.status}`);
       return false;
     }
     return true;
   } catch (err) {
-    log.error(
-      `backup: kuma push failed: ${err?.cause?.code ?? err?.name ?? "error"}`,
-    );
+    log.error(`backup: kuma push failed: ${networkErrorTag(err)}`);
     return false;
   }
 }

@@ -4,7 +4,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import DatabaseDriver from "better-sqlite3";
-import { BackupError, toBackupError } from "./errors.js";
+import { BackupError, isDiskFull, toBackupError } from "./errors.js";
 
 export const LOCAL_RE = /^secrets-(\d{8})\.db$/;
 export const INFLIGHT = ".inflight.tmp";
@@ -52,7 +52,7 @@ export function verifySnapshot(file) {
     return { secrets: count("secrets"), tokens: count("tokens") };
   } catch (err) {
     if (err instanceof BackupError) throw err;
-    if (err?.code === "ENOSPC" || err?.code === "SQLITE_FULL") {
+    if (isDiskFull(err)) {
       throw new BackupError("disk_low", { cause: err });
     }
     throw new BackupError("integrity_failed", { cause: err });
