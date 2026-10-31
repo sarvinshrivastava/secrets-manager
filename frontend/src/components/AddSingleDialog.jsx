@@ -1,5 +1,9 @@
 import { useEffect, useState } from "react";
 import { MdClose } from "react-icons/md";
+import FolderSelect from "./FolderSelect.jsx";
+import { useModalGuard } from "../hooks/useModalGuard.jsx";
+import { useBackdropClose } from "../hooks/useBackdropClose.js";
+import { isValidFolderName, FOLDER_RULE_HINT } from "../lib/folders.js";
 
 const KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
@@ -8,6 +12,8 @@ export default function AddSingleDialog({
   open,
   folders,
   defaultFolder,
+  initialFolder = "", // preset (overrides defaultFolder on open)
+  initialFolderMode = "select", // "new" opens the folder field as a name input
   busy,
   onSubmit, // ({ key, value, folder }) => Promise
   onClose,
@@ -17,23 +23,27 @@ export default function AddSingleDialog({
   const [folder, setFolder] = useState(defaultFolder);
   const [error, setError] = useState("");
 
+  // Reset only when the dialog opens: a folders/default refresh while open must
+  // not clobber what the user typed.
   useEffect(() => {
     if (open) {
       setKey("");
       setValue("");
-      setFolder(defaultFolder);
+      // "New folder" mode starts with an empty name box, not the default folder.
+      setFolder(
+        initialFolderMode === "new" ? initialFolder : initialFolder || defaultFolder,
+      );
       setError("");
     }
-  }, [open, defaultFolder]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
-  useEffect(() => {
-    if (!open) return undefined;
-    function onKey(event) {
-      if (event.key === "Escape") onClose();
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
+  const { requestClose, discardDialog } = useModalGuard({
+    open,
+    dirty: key !== "" || value !== "",
+    onClose,
+  });
+  const backdrop = useBackdropClose(requestClose);
 
   if (!open) return null;
 
@@ -48,33 +58,40 @@ export default function AddSingleDialog({
       setError("Value is required");
       return;
     }
+    const trimmedFolder = folder.trim();
+    if (!isValidFolderName(trimmedFolder)) {
+      setError(trimmedFolder ? FOLDER_RULE_HINT : "Choose a folder");
+      return;
+    }
     setError("");
-    onSubmit({
-      key: trimmedKey,
-      value,
-      folder: folder.trim() || defaultFolder,
-    });
+    onSubmit({ key: trimmedKey, value, folder: trimmedFolder });
   }
 
   return (
+    <>
     <div
-      className="fixed inset-0 z-40 flex items-center justify-center bg-ink/40 px-4"
-      onClick={onClose}
+      className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 px-4"
+      {...backdrop}
       role="presentation"
     >
       <form
-        className="w-full max-w-lg border border-line-strong bg-surface"
-        onClick={(event) => event.stopPropagation()}
+        className="max-h-[calc(100dvh-2rem)] w-full max-w-lg overflow-y-auto border border-line-strong bg-surface"
         onSubmit={handleSubmit}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="add-secret-title"
       >
         <div className="flex items-center justify-between border-b border-line px-5 py-3">
-          <h3 className="font-mono text-sm font-semibold text-ink">
+          <h3
+            id="add-secret-title"
+            className="font-mono text-sm font-semibold text-ink"
+          >
             Add secret
           </h3>
           <button
             type="button"
-            onClick={onClose}
-            className="text-muted hover:text-ink"
+            onClick={requestClose}
+            className="p-2 text-muted hover:text-ink"
             aria-label="Close"
           >
             <MdClose size={18} />
@@ -83,10 +100,14 @@ export default function AddSingleDialog({
 
         <div className="space-y-4 px-5 py-4">
           <div>
-            <label className="mb-1 block font-mono text-xs uppercase tracking-wide text-faint">
+            <label
+              htmlFor="add-secret-key"
+              className="mb-1 block font-mono text-xs uppercase tracking-wide text-faint"
+            >
               Key
             </label>
             <input
+              id="add-secret-key"
               autoFocus
               value={key}
               onChange={(event) => setKey(event.target.value)}
@@ -95,10 +116,14 @@ export default function AddSingleDialog({
             />
           </div>
           <div>
-            <label className="mb-1 block font-mono text-xs uppercase tracking-wide text-faint">
+            <label
+              htmlFor="add-secret-value"
+              className="mb-1 block font-mono text-xs uppercase tracking-wide text-faint"
+            >
               Value
             </label>
             <textarea
+              id="add-secret-value"
               value={value}
               onChange={(event) => setValue(event.target.value)}
               rows={3}
@@ -107,20 +132,19 @@ export default function AddSingleDialog({
             />
           </div>
           <div>
-            <label className="mb-1 block font-mono text-xs uppercase tracking-wide text-faint">
+            <label
+              htmlFor="add-secret-folder"
+              className="mb-1 block font-mono text-xs uppercase tracking-wide text-faint"
+            >
               Folder
             </label>
-            <input
-              list="add-single-folders"
+            <FolderSelect
+              id="add-secret-folder"
               value={folder}
-              onChange={(event) => setFolder(event.target.value)}
-              className="sm-input"
+              onChange={setFolder}
+              folders={folders}
+              startInNew={initialFolderMode === "new"}
             />
-            <datalist id="add-single-folders">
-              {folders.map((name) => (
-                <option key={name} value={name} />
-              ))}
-            </datalist>
           </div>
           {error && <p className="font-mono text-xs text-danger">{error}</p>}
         </div>
@@ -129,7 +153,7 @@ export default function AddSingleDialog({
           <button
             type="button"
             className="sm-btn"
-            onClick={onClose}
+            onClick={requestClose}
             disabled={busy}
           >
             Cancel
@@ -140,5 +164,7 @@ export default function AddSingleDialog({
         </div>
       </form>
     </div>
+    {discardDialog}
+    </>
   );
 }

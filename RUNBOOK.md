@@ -41,7 +41,9 @@ production incidents.
 > the whole point of the route allowlist. Rules:
 > - The public vhost must proxy ONLY `GET /api/secrets/:folder/:key` and
 >   `/healthz`. Use explicit `location` matches for those two paths — never a
->   bare catch-all `location /`.
+>   bare catch-all `location /`. Make the secret-path location `GET`-only
+>   (`limit_except GET { deny all; }` or a `$request_method` check) so
+>   `PATCH` and `DELETE /api/secrets/:folder/:key` stay blocked.
 > - Reach the admin UI at `/` via an **SSH tunnel** to `127.0.0.1:8000`
 >   (`ssh -L 8000:127.0.0.1:8000 <host>`, then open `http://localhost:8000/`),
 >   NOT through the public proxy.
@@ -496,7 +498,10 @@ to handle at cutover:
 - The **old UI path `/secret-manager/` now 404s.** Update bookmarks; if the proxy
   rewrites/strips that prefix, remove the rule.
 - The public vhost must expose **only** `GET /api/secrets/:folder/:key` and
-  `/healthz`, via explicit `location` matches. Because the SPA now sits at `/`, a
+  `/healthz`, via explicit `location` matches. The secret-path location must be
+  `GET`-only: `PATCH /api/secrets/:folder/:key` (edit) and `DELETE` must not
+  reach the backend from the internet. Verify this on the live vhost after
+  deploying the edit endpoint (not checked from this repo). Because the SPA now sits at `/`, a
   bare catch-all `location / { proxy_pass ... }` would re-expose the whole
   internal API — `/api/tokens`, `/api/exports`, `/api/import`, `/api/secrets`
   list, `/api/folders`, `/api/audit-logs` — to the internet.

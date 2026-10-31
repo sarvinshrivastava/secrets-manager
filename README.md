@@ -206,20 +206,36 @@ curl -s -H "Authorization: Bearer <READ_TOKEN>" \
 | Method | Path | Auth | Notes |
 |---|---|---|---|
 | `GET` | `/api/secrets` | read | List all `{folder, key}` pairs — no values |
-| `POST` | `/api/secrets` | write | Create secret; immutable — `409` if it already exists |
+| `POST` | `/api/secrets` | write | Create secret; never overwrites — `409` if it already exists |
 | `POST` | `/api/secrets/bulk` | write | Bulk create in one folder (see below) |
+| `PATCH` | `/api/secrets/:folder/:key` | write | Rename, move and/or replace the value (see below) |
 | `DELETE` | `/api/secrets/:folder/:key` | write | Delete one secret |
 
 ```bash
-# Create (delete-then-recreate to change a value; create is immutable)
+# Create (never overwrites; use PATCH below to change a secret)
 curl -s -X POST http://localhost:8000/api/secrets \
   -H "Authorization: Bearer <WRITE_TOKEN>" -H "Content-Type: application/json" \
   -d '{"key":"DATABASE_URL","value":"postgres://...","folder":"Root"}'
+
+# Edit: any of key / folder / value (at least one; every field must be a string)
+curl -s -X PATCH http://localhost:8000/api/secrets/Root/DATABASE_URL \
+  -H "Authorization: Bearer <WRITE_TOKEN>" -H "Content-Type: application/json" \
+  -d '{"key":"DB_URL","folder":"ServiceA","value":"postgres://..."}'
 
 # Delete
 curl -s -X DELETE -H "Authorization: Bearer <WRITE_TOKEN>" \
   http://localhost:8000/api/secrets/Root/DATABASE_URL
 ```
+
+`PATCH` keeps the secret's id and `created_at`. A present `folder` must be
+non-empty (no `Root` fallback). The token needs scope for both the source and
+the target folder. Responses: `200 {"status":"ok","key","folder"}`, `400`
+(invalid or no field), `403` (read token or out-of-scope folder), `404`
+(source missing), `409` (target already exists). An edit that changes nothing
+(same key and folder, no `value`) returns `200` with no write and no audit row.
+Each real edit writes a `secret_edited` audit row with
+`from=<folder>|<key> to=<folder>|<key> value_changed=<bool>`; the value is never
+logged. Renaming or moving breaks anything that still `GET`s the old path.
 
 Key names must be environment-style: letters, digits, underscores, not starting
 with a digit. `folder` defaults to `Root` when omitted.
@@ -287,6 +303,18 @@ curl -s -X POST http://localhost:8000/api/import \
 |---|---|---|---|
 | `GET` | `/api/auth/me` | read | `{ "token_name", "role" }` for the presented token |
 | `GET` | `/api/audit-logs` | **admin** (`*`-scoped write) | Query params: `action`, `status`, `key`, `token_name`, `limit` (1–500, default 100). A folder-scoped token gets `403 {"detail":"Admin token required"}` — the log spans all folders |
+| `GET` | `/api/analytics` | read (any role) | Usage analytics, see below |
+
+**Analytics** — `GET /api/analytics?range=24h|7d|30d|90d` (default `7d`; an empty, repeated or unknown `range` is `400 {"detail":"Invalid range"}`). The endpoint writes no audit row of its own.
+
+- Admin (write role and scope `*`, the same test as `/api/audit-logs`) gets every panel. Anyone else gets `secrets` (only the folders their scope allows) and `null` for `tokens`, `activity`, `top_keys`, `top_tokens` and `unread`. A non-admin is not audited and not refused.
+- Response: `range`, `since`, `generated_at`, `retention_days`, `clamped`, `admin`, `secrets {total, folders[{folder,count}]}`, `tokens {active, expiring_7d, expired, revoked_all_time}`, `activity {bucket:"hour"|"day", points[{t, reads, secret_writes, auth_failures, rate_limited}]}`, `top_keys[{key,reads}]` (max 10), `top_tokens[{name,events}]` (max 10), `unread {total, items[{folder,key,created_at}]}` (items max 50). Lists are `[]`, never `null`.
+- Time model (UTC): `24h` is 24 hour buckets, the others 7, 30 or 90 day buckets, ending in the current bucket and zero-filled. Rows count when `since <= timestamp <= generated_at`. `since` is the window start, moved later when the audit retention (`AUDIT_LOG_RETENTION_DAYS`) is shorter than the range; then `clamped` is `true`.
+- `reads`: ok `get_secret` and ok `export_env` (`list_keys` is not a read). `top_keys` counts ok `get_secret` only, grouped by key name across folders. `secret_writes`: ok `secret_created`, `secret_updated`, `secret_edited`, `secret_deleted`, and one per `import_env`. `auth_failures`: `auth` and `authz` rows (folder-scope denials are not audited, so not counted). `rate_limited`: `rate_limit` rows. These count logged audit rows. `top_tokens` counts every audit row carrying the token name.
+- `tokens`: `active` is not revoked and not expired; `expiring_7d` is active and expires within 7 days; `revoked_all_time` is not limited to the window.
+- `unread` ("Not read in window") is a hint, never a delete list. It lists secrets created before `since` with no read evidence in the window: an ok `get_secret` (rows logged before this version match by key name only), an ok `export_env` naming the folder (legacy rows without the folder list cover every folder), an ok `secret_edited` whose target is the secret (a value-only edit counts, a bulk overwrite does not), or an ok `folder_renamed` into its folder (this also marks the existing secrets of a non-empty target folder).
+- Audit details used above: `get_secret` rows carry `folder=<F>` (`folder=<F> Decrypt failure` on error) and `export_env` rows carry `folders=<F1>,<F2>`, sorted by code point.
+- A `(timestamp, action)` index on `audit_logs` is created at start-up. Each aggregate is one range scan bounded by the audit retention.
 
 ## Security Notes
 

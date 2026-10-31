@@ -152,6 +152,14 @@ describe("isValidFolderName", () => {
     expect(isValidFolderName("")).toBe(false);
     expect(isValidFolderName("bad/slash")).toBe(false);
   });
+  it("rejects dot-only names (same as the Go port)", () => {
+    for (const name of [".", "..", "...", "......"]) {
+      expect(isValidFolderName(name)).toBe(false);
+    }
+    expect(isValidFolderName("a.b")).toBe(true);
+    expect(isValidFolderName(".hidden")).toBe(true);
+    expect(isValidFolderName("..a")).toBe(true);
+  });
 });
 
 describe("assertBootstrapTokenFormat", () => {

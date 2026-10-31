@@ -1,5 +1,7 @@
 # Known flake: tokens.test.js "scoped token can rotate a token within its scope"
 
+> **Applies to:** `server/test/helpers.js`, `server/test/tokens.test.js`
+
 **Status:** open, low priority. Not a known product bug — but do not dismiss it if it starts reproducing.
 
 ## Symptom

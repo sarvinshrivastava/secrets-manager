@@ -17,7 +17,8 @@ export class Database {
   initSchema() {
     this.db.pragma("journal_mode = WAL");
 
-    // Secrets: immutable (no updated_at), auto-increment id, UNIQUE(folder, key)
+    // Secrets: no updated_at, auto-increment id, UNIQUE(folder, key). Create never
+    // overwrites; PATCH (editSecret) may rename, move or re-encrypt in place.
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS secrets (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -100,6 +101,13 @@ export class Database {
         "UPDATE tokens SET scope = '*' WHERE scope IS NULL OR scope = ''",
       );
     }
+
+    // Range scans for the analytics page (and the daily prune) filter on
+    // timestamp, then on action. Additive and idempotent; reversible with
+    // DROP INDEX idx_audit_logs_ts_action.
+    this.db.exec(
+      "CREATE INDEX IF NOT EXISTS idx_audit_logs_ts_action ON audit_logs(timestamp, action)",
+    );
   }
 
   _prepareStatements() {
@@ -115,6 +123,14 @@ export class Database {
     );
     this.updateSecretStmt = this.db.prepare(
       "UPDATE secrets SET nonce = ?, ciphertext = ? WHERE folder = ? AND key = ?",
+    );
+    // Single UPDATE keeps id and created_at. The value variant also replaces
+    // nonce + ciphertext.
+    this.editSecretStmt = this.db.prepare(
+      "UPDATE secrets SET key = ?, folder = ? WHERE folder = ? AND key = ?",
+    );
+    this.editSecretWithValueStmt = this.db.prepare(
+      "UPDATE secrets SET key = ?, folder = ?, nonce = ?, ciphertext = ? WHERE folder = ? AND key = ?",
     );
     this.deleteSecretStmt = this.db.prepare(
       "DELETE FROM secrets WHERE folder = ? AND key = ?",
@@ -224,6 +240,26 @@ export class Database {
   /** Returns true if an existing (folder, key) was updated, false if absent. */
   updateSecret(folder, key, nonce, ciphertext) {
     const result = this.updateSecretStmt.run(nonce, ciphertext, folder, key);
+    return result.changes > 0;
+  }
+
+  /**
+   * Rename and/or move a secret (and optionally replace its value) in one
+   * UPDATE. Pass `encrypted` ({nonce, ciphertext}) to replace the value.
+   * Returns true if a row was updated, false if the source is absent. Throws
+   * SQLITE_CONSTRAINT_UNIQUE when the target (folder, key) already exists.
+   */
+  editSecret(fromFolder, fromKey, toFolder, toKey, encrypted = null) {
+    const result = encrypted
+      ? this.editSecretWithValueStmt.run(
+          toKey,
+          toFolder,
+          encrypted.nonce,
+          encrypted.ciphertext,
+          fromFolder,
+          fromKey,
+        )
+      : this.editSecretStmt.run(toKey, toFolder, fromFolder, fromKey);
     return result.changes > 0;
   }
 
@@ -375,5 +411,104 @@ export class Database {
 
   pruneAuditLogs(cutoffIso) {
     this.pruneAuditLogsStmt.run(cutoffIso);
+  }
+  // ── Analytics ────────────────────────────────────────────────────────────
+  // Every audit query below is ONE bounded range scan over [since, until]
+  // (ISO strings, inclusive). Aggregation beyond GROUP BY happens in code.
+  // Statements are prepared once per SQL text and reused.
+
+  _analyticsStmt(sql) {
+    if (!this._analyticsStmts) this._analyticsStmts = new Map();
+    let stmt = this._analyticsStmts.get(sql);
+    if (!stmt) {
+      stmt = this.db.prepare(sql);
+      this._analyticsStmts.set(sql, stmt);
+    }
+    return stmt;
+  }
+
+  /**
+   * Grouped counts per (bucket, action, status). `bucketLen` is the ISO prefix
+   * length that identifies a bucket: 13 = hour (YYYY-MM-DDTHH), 10 = day.
+   */
+  analyticsActivityCounts(since, until, bucketLen, actions) {
+    const marks = actions.map(() => "?").join(", ");
+    return this._analyticsStmt(
+      `SELECT substr(timestamp, 1, ?) AS bucket, action, status, COUNT(*) AS n
+       FROM audit_logs
+       WHERE timestamp >= ? AND timestamp <= ? AND action IN (${marks})
+       GROUP BY bucket, action, status`,
+    ).all(bucketLen, since, until, ...actions);
+  }
+
+  /** Top ok get_secret rows grouped by key name alone (folders merge). */
+  analyticsTopKeys(since, until, limit) {
+    return this._analyticsStmt(
+      `SELECT key_name AS key, COUNT(*) AS reads
+       FROM audit_logs
+       WHERE timestamp >= ? AND timestamp <= ? AND action = 'get_secret'
+         AND status = 'ok' AND key_name IS NOT NULL
+       GROUP BY key_name
+       ORDER BY reads DESC, key_name ASC
+       LIMIT ?`,
+    ).all(since, until, limit);
+  }
+
+  /** Top token names by audit rows of any action/status. */
+  analyticsTopTokens(since, until, limit) {
+    return this._analyticsStmt(
+      `SELECT token_name AS name, COUNT(*) AS events
+       FROM audit_logs
+       WHERE timestamp >= ? AND timestamp <= ? AND token_name IS NOT NULL
+       GROUP BY token_name
+       ORDER BY events DESC, token_name ASC
+       LIMIT ?`,
+    ).all(since, until, limit);
+  }
+
+  /** DISTINCT ok rows that prove a secret was read (see routes/analytics.js). */
+  analyticsReadEvidence(since, until) {
+    return this._analyticsStmt(
+      `SELECT DISTINCT action, key_name, details
+       FROM audit_logs
+       WHERE timestamp >= ? AND timestamp <= ? AND status = 'ok'
+         AND action IN ('get_secret', 'export_env', 'secret_edited', 'folder_renamed')`,
+    ).all(since, until);
+  }
+
+  /**
+   * Secrets created before `before` (ISO). Legacy migrated rows hold
+   * `YYYY-MM-DD HH:MM:SS`, so the compare normalises the space to a T; the
+   * returned created_at is the raw stored value.
+   */
+  analyticsSecretsCreatedBefore(before) {
+    return this._analyticsStmt(
+      `SELECT folder, key, created_at FROM secrets
+       WHERE replace(created_at, ' ', 'T') < ?
+       ORDER BY replace(created_at, ' ', 'T') ASC, folder ASC, key ASC`,
+    ).all(before);
+  }
+
+  analyticsSecretFolderCounts() {
+    return this._analyticsStmt(
+      "SELECT folder, COUNT(*) AS count FROM secrets GROUP BY folder",
+    ).all();
+  }
+
+  analyticsTokenCounts(nowIso, in7dIso) {
+    const row = this._analyticsStmt(
+      `SELECT
+         COALESCE(SUM(CASE WHEN revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?) THEN 1 ELSE 0 END), 0) AS active,
+         COALESCE(SUM(CASE WHEN revoked_at IS NULL AND expires_at > ? AND expires_at <= ? THEN 1 ELSE 0 END), 0) AS expiring_7d,
+         COALESCE(SUM(CASE WHEN revoked_at IS NULL AND expires_at <= ? THEN 1 ELSE 0 END), 0) AS expired,
+         COALESCE(SUM(CASE WHEN revoked_at IS NOT NULL THEN 1 ELSE 0 END), 0) AS revoked_all_time
+       FROM tokens`,
+    ).get(nowIso, nowIso, in7dIso, nowIso);
+    return {
+      active: Number(row.active),
+      expiring_7d: Number(row.expiring_7d),
+      expired: Number(row.expired),
+      revoked_all_time: Number(row.revoked_all_time),
+    };
   }
 }

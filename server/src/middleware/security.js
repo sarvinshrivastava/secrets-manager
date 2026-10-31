@@ -1,7 +1,12 @@
 import { getClientIp } from "../utils.js";
 
 export function createSecurityMiddleware(db, rateLimiter, trustedProxyIps) {
-  function securityHeaders(_req, res, next) {
+  function securityHeaders(req, res, next) {
+    // API responses can carry secret material: no cache may store them.
+    if (req.path.startsWith("/api/")) {
+      res.setHeader("Cache-Control", "no-store");
+      res.setHeader("Pragma", "no-cache");
+    }
     res.setHeader("X-Content-Type-Options", "nosniff");
     res.setHeader("X-Frame-Options", "DENY");
     res.setHeader("Referrer-Policy", "no-referrer");

@@ -3,6 +3,7 @@ import {
   MdVisibility,
   MdVisibilityOff,
   MdDelete,
+  MdEdit,
 } from "react-icons/md";
 import { relativeAge, DOT_MASK } from "../lib/format.js";
 
@@ -17,6 +18,7 @@ export default function VaultRow({
   onCopy,
   onReveal,
   onMask,
+  onEdit,
   onDelete,
 }) {
   const { key, folder, id } = secret;
@@ -24,12 +26,22 @@ export default function VaultRow({
   const canWrite = role === "write";
 
   return (
-    <tr className="group border-b border-line hover:bg-accent-soft/40">
+    <tr className="group border-b border-line hover:bg-accent-soft">
       <td className="px-3 py-2 align-middle">
-        <span className="font-mono text-sm font-bold text-ink">{key}</span>
+        <span
+          className="block truncate font-mono text-sm font-bold text-ink"
+          title={key}
+        >
+          {key}
+        </span>
       </td>
       <td className="px-3 py-2 align-middle">
-        <span className="sm-chip border-line-strong text-muted">{folder}</span>
+        <span
+          className="sm-chip max-w-full border-line-strong text-muted"
+          title={folder}
+        >
+          <span className="min-w-0 truncate">{folder}</span>
+        </span>
       </td>
       {/* Fixed-width cell: dots and the revealed value both occupy one line and
           truncate, so toggling reveal never resizes the column or reflows the
@@ -55,14 +67,14 @@ export default function VaultRow({
       </td>
       <td className="px-3 py-2 align-middle">
         {/* Actions are always visible on touch; fade-in on hover for pointers. */}
-        <div className="flex items-center justify-end gap-1 opacity-100 sm:opacity-0 sm:transition-opacity sm:group-hover:opacity-100 sm:focus-within:opacity-100">
+        <div className="flex items-center justify-end gap-1 opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:transition-opacity [@media(hover:hover)]:group-hover:opacity-100 [@media(hover:hover)]:focus-within:opacity-100">
           <button
             type="button"
             className="border border-line-strong p-1.5 text-muted hover:border-accent hover:text-accent disabled:opacity-50"
             onClick={() => onCopy(id)}
             disabled={busy}
             aria-label={`Copy ${key} in ${folder}`}
-            title="Copy value (never rendered)"
+            title="Copy value"
           >
             <MdContentCopy size={15} />
           </button>
@@ -80,6 +92,18 @@ export default function VaultRow({
               <MdVisibility size={15} />
             )}
           </button>
+          {canWrite && (
+            <button
+              type="button"
+              className="border border-line-strong p-1.5 text-muted hover:border-accent hover:text-accent disabled:opacity-50"
+              onClick={() => onEdit(secret)}
+              disabled={busy}
+              aria-label={`Edit ${key} in ${folder}`}
+              title="Edit key, folder or value"
+            >
+              <MdEdit size={15} />
+            </button>
+          )}
           {canWrite && (
             <button
               type="button"

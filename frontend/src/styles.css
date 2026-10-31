@@ -7,13 +7,13 @@
   --surface: #ffffff;
   --ink: #16211e;
   --muted: #5c6b66;
-  --faint: #8ca09a;
+  --faint: #5c6e68;
   --line: #dce5e1;
   --line-strong: #b9c8c2;
   --accent: #177e6d;
   --accent-soft: #e2f1ec;
-  --ok: #1e8a4a;
-  --warn: #a87a12;
+  --ok: #18703b;
+  --warn: #8a6410;
   --danger: #b3362b;
 }
 
@@ -22,14 +22,23 @@
   --surface: #16211e;
   --ink: #e4edea;
   --muted: #93a8a1;
-  --faint: #64786f;
+  --faint: #8a9f98;
   --line: #24332f;
   --line-strong: #3a4d47;
   --accent: #3fbfa8;
   --accent-soft: #16302b;
-  --ok: #1e8a4a;
-  --warn: #a87a12;
-  --danger: #b3362b;
+  --ok: #4cc27a;
+  --warn: #d9a441;
+  --danger: #ef6a5e;
+}
+
+/* Before the JS applies the theme class, follow the browser so there is no
+   white flash on a dark system (the .dark rule below wins once applied). */
+@media (prefers-color-scheme: dark) {
+  html:not(.dark):not(.light) body {
+    background-color: #101816;
+    color: #e4edea;
+  }
 }
 
 html,
@@ -67,7 +76,7 @@ body {
     @apply cursor-not-allowed opacity-50;
   }
   .sm-btn-danger {
-    @apply inline-flex items-center justify-center gap-2 border border-danger bg-danger px-3 py-1.5 font-mono text-sm font-semibold text-white transition-opacity;
+    @apply inline-flex items-center justify-center gap-2 border border-danger bg-danger px-3 py-1.5 font-mono text-sm font-semibold text-surface transition-opacity;
   }
   .sm-btn-danger:disabled {
     @apply cursor-not-allowed opacity-50;
@@ -78,6 +87,9 @@ body {
   }
   .sm-input:focus {
     @apply border-accent;
+  }
+  .sm-input:focus-visible {
+    box-shadow: 0 0 0 1px var(--accent);
   }
 
   /* Verb-colored / state chips. Color reserved for state, never decoration. */

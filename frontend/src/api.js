@@ -124,6 +124,20 @@ export function bulkCreateSecrets(token, folder, secrets, overwrite = []) {
   });
 }
 
+// PATCH /api/secrets/:folder/:key — atomic rename / move / value replace.
+// patch: any of { key, folder, value }; only changed fields should be sent.
+export function editSecret(token, folder, key, patch) {
+  return apiFetch(
+    `/api/secrets/${encodeURIComponent(folder)}/${encodeURIComponent(key)}`,
+    token,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    },
+  );
+}
+
 export function deleteSecret(token, folder, key) {
   return apiFetch(
     `/api/secrets/${encodeURIComponent(folder)}/${encodeURIComponent(key)}`,
@@ -146,6 +160,14 @@ export function listAuditLogs(
   if (key && key.trim()) params.set("key", key.trim());
   params.set("limit", String(limit));
   return apiFetch(`/api/audit-logs?${params.toString()}`, token);
+}
+
+// GET /api/analytics?range=24h|7d|30d|90d — aggregates for the Analytics view.
+export function getAnalytics(token, range = "7d") {
+  return apiFetch(
+    `/api/analytics?range=${encodeURIComponent(range)}`,
+    token,
+  );
 }
 
 export function renameFolder(token, from, to) {

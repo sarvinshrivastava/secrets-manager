@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { useBackdropClose } from "../hooks/useBackdropClose.js";
 
 // Generic confirm modal (replaces DeleteDialog). Radius 0, hairline border,
 // plain fixed overlay — no reactjs-popup so the design tokens are honoured.
@@ -10,29 +11,34 @@ export default function ConfirmDialog({
   confirmLabel = "Confirm",
   danger = false,
   busy = false,
+  layer = "z-40",
   onConfirm,
   onClose,
 }) {
+  // Escape and the backdrop are ignored while the action is in flight.
   useEffect(() => {
     if (!open) return undefined;
     function onKey(event) {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape" && !busy) onClose();
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
+  }, [open, busy, onClose]);
+
+  const backdrop = useBackdropClose(() => {
+    if (!busy) onClose();
+  });
 
   if (!open) return null;
 
   return (
     <div
-      className="fixed inset-0 z-40 flex items-center justify-center bg-ink/40 px-4"
-      onClick={onClose}
+      className={`fixed inset-0 ${layer} flex items-center justify-center bg-black/40 px-4`}
+      {...backdrop}
       role="presentation"
     >
       <div
-        className="w-full max-w-md border border-line-strong bg-surface"
-        onClick={(event) => event.stopPropagation()}
+        className="max-h-[calc(100dvh-2rem)] w-full max-w-md overflow-y-auto border border-line-strong bg-surface"
         role="dialog"
         aria-modal="true"
         aria-label={title}
@@ -54,6 +60,7 @@ export default function ConfirmDialog({
             className="sm-btn"
             onClick={onClose}
             disabled={busy}
+            autoFocus={danger}
           >
             Cancel
           </button>

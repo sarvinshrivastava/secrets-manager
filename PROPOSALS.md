@@ -268,7 +268,7 @@ means broken CI across all projects.
 
 #### QUALITY OF LIFE — Do Soon After
 
-**11. Secret versioning (keep last N values)** — ❌ not implemented (secrets are immutable-on-create today: delete + recreate to change a value)
+**11. Secret versioning (keep last N values)** — ❌ not implemented (no version history today: `PATCH /api/secrets/:folder/:key` overwrites a value in place, so the old value is gone)
 - Rotating a wrong secret during an active pipeline run breaks CI with no recovery
 - Fix: keep last 2-3 versions per secret, allow point-in-time restore
 - Effort: 3 hours

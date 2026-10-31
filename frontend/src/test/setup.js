@@ -26,15 +26,26 @@ function createMemoryStorage() {
 }
 
 // jsdom has no matchMedia; react-hot-toast (and theme detection) call it.
+// Controllable: tests call globalThis.__setSystemDark(true|false) to flip the
+// browser colour scheme and fire "change" listeners.
+let systemDark = false;
+const mediaListeners = new Set();
+globalThis.__setSystemDark = (value) => {
+  systemDark = Boolean(value);
+  mediaListeners.forEach((fn) => fn({ matches: systemDark }));
+};
+globalThis.__mediaListenerCount = () => mediaListeners.size;
 if (typeof globalThis.matchMedia !== "function") {
   globalThis.matchMedia = (query) => ({
-    matches: false,
+    get matches() {
+      return /prefers-color-scheme:\s*dark/.test(query) ? systemDark : false;
+    },
     media: query,
     onchange: null,
-    addListener: () => {},
-    removeListener: () => {},
-    addEventListener: () => {},
-    removeEventListener: () => {},
+    addListener: (fn) => mediaListeners.add(fn),
+    removeListener: (fn) => mediaListeners.delete(fn),
+    addEventListener: (_type, fn) => mediaListeners.add(fn),
+    removeEventListener: (_type, fn) => mediaListeners.delete(fn),
     dispatchEvent: () => false,
   });
 }
@@ -55,6 +66,9 @@ if (typeof globalThis.sessionStorage === "undefined") {
 }
 
 beforeEach(() => {
+  systemDark = false;
+  mediaListeners.clear();
+  document.documentElement.className = "";
   globalThis.localStorage.clear();
   globalThis.sessionStorage.clear();
 });
