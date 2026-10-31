@@ -2,7 +2,11 @@ export const ENV_KEY_REGEX = /^[A-Za-z_][A-Za-z0-9_]*$/;
 export const FOLDER_NAME_REGEX = /^[A-Za-z0-9 _.-]{1,128}$/;
 
 export function isValidFolderName(name) {
-  return typeof name === "string" && FOLDER_NAME_REGEX.test(name);
+  if (typeof name !== "string" || !FOLDER_NAME_REGEX.test(name)) return false;
+  // Dot-only names (".", "..", "...") can never be addressed: HTTP clients and
+  // routers canonicalize dot path segments, so per-key routes would 404 and
+  // the keys would be stranded. Mirrors the Go port's validator.
+  return name.replace(/\./g, "") !== "";
 }
 
 export function getClientIp(req, trustedProxyIps = []) {

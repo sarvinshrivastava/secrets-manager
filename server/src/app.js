@@ -5,6 +5,7 @@ import express from "express";
 
 import { createAuthMiddleware } from "./middleware/auth.js";
 import { createSecurityMiddleware } from "./middleware/security.js";
+import { createAnalyticsRouter } from "./routes/analytics.js";
 import { createAuditRouter } from "./routes/audit.js";
 import { createExportsRouter } from "./routes/exports.js";
 import { createFoldersRouter } from "./routes/folders.js";
@@ -79,6 +80,17 @@ export function createApp(settings, db, crypto, rateLimiter) {
   // Audit logs
   app.use("/api/audit-logs", createAuditRouter(db, authHandlers));
 
+  // Analytics (any authenticated token; admin panels are null for non-admins).
+  // `settings.now` is an optional epoch-ms clock, set only by tests.
+  app.use(
+    "/api/analytics",
+    createAnalyticsRouter(db, authHandlers, {
+      retentionDays: settings.auditLogRetentionDays,
+      cacheMs: settings.analyticsCacheMs,
+      now: settings.now,
+    }),
+  );
+
   // Terminal JSON 404 for unknown /api/* routes — must sit BEFORE the SPA
   // fallback so an unknown API path returns JSON, not index.html.
   app.use("/api", (_req, res) => res.status(404).json({ detail: "Not found" }));
@@ -100,6 +112,19 @@ export function createApp(settings, db, crypto, rateLimiter) {
   //   redacted line (message + status).
   app.use((err, _req, res, _next) => {
     const status = err.status || err.statusCode || 500;
+    // Body-parser errors (malformed JSON, oversize, bad charset) carry a message
+    // that QUOTES the request body — on Node 20+ V8 prints the offending JSON
+    // snippet, e.g. {"value": hunter2} => plaintext secret. Log only type+status
+    // and answer with a fixed string.
+    if (typeof err.type === "string" && err.type.startsWith("entity.")) {
+      console.error(`Request error: status=${status} type=${err.type}`);
+      if (res.headersSent) return;
+      const detail =
+        err.type === "entity.too.large"
+          ? "request entity too large"
+          : "Invalid JSON body";
+      return res.status(status).json({ detail });
+    }
     console.error(`Request error: status=${status} message=${err.message}`);
     if (res.headersSent) return;
     const detail =

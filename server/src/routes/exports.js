@@ -45,6 +45,10 @@ export function createExportsRouter(
       action: "export_env",
       status: "ok",
       tokenName: req.auth.name,
+      // Binary order, not localeCompare: must match the Go port byte for byte.
+      details: `folders=${[...byFolder.keys()]
+        .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
+        .join(",")}`,
     });
     res.type("text/plain").send(output);
   });

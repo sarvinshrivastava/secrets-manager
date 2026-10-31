@@ -234,6 +234,12 @@ export function createSecretsRouter(
         return res.status(400).json({ detail: "Invalid key format" });
       }
 
+      // Before the scope check and any audit write: the folder is echoed into
+      // audit details (`folder=<F>`), so arbitrary bytes must never reach them.
+      if (!isValidFolderName(folder)) {
+        return res.status(400).json({ detail: "Invalid folder name" });
+      }
+
       if (!scopeAllowsFolder(req.auth.scope, folder)) {
         return forbidFolder(res, folder);
       }
@@ -245,6 +251,7 @@ export function createSecretsRouter(
           status: "missing",
           tokenName: req.auth.name,
           keyName: key,
+          details: `folder=${folder}`,
         });
         return res.status(404).json({ detail: "Secret not found" });
       }
@@ -256,6 +263,7 @@ export function createSecretsRouter(
           status: "ok",
           tokenName: req.auth.name,
           keyName: key,
+          details: `folder=${folder}`,
         });
         return res.json({
           key,
@@ -270,7 +278,7 @@ export function createSecretsRouter(
           status: "error",
           tokenName: req.auth.name,
           keyName: key,
-          details: "Decrypt failure",
+          details: `folder=${folder} Decrypt failure`,
         });
         return res
           .status(500)
@@ -278,6 +286,121 @@ export function createSecretsRouter(
       }
     },
   );
+
+  // PATCH /api/secrets/:folder/:key — rename and/or move and/or replace the
+  // value (write auth, internal). Body: { key?, folder?, value? }; every present
+  // field must be a string. Order: parse -> validate -> scope(source) ->
+  // scope(target) -> load source (404) -> no-op -> write (409 on UNIQUE).
+  router.patch("/:folder/:key", requireAuth, requireWriteAccess, (req, res) => {
+    const { folder: fromFolder, key: fromKey } = req.params;
+    const body =
+      req.body && typeof req.body === "object" && !Array.isArray(req.body)
+        ? req.body
+        : {};
+    const has = (name) => Object.hasOwn(body, name);
+
+    if (!has("key") && !has("folder") && !has("value")) {
+      return res.status(400).json({ detail: "Nothing to update" });
+    }
+    if (!requireEnvKey(fromKey)) {
+      return res.status(400).json({ detail: "Invalid key format" });
+    }
+
+    let toKey = fromKey;
+    if (has("key")) {
+      toKey = body.key;
+      if (
+        typeof toKey !== "string" ||
+        toKey.length < 1 ||
+        toKey.length > 128 ||
+        !requireEnvKey(toKey)
+      ) {
+        return res.status(400).json({
+          detail:
+            "Invalid key. Use environment-style names: letters, numbers, underscores, cannot start with a number.",
+        });
+      }
+    }
+
+    let toFolder = fromFolder;
+    if (has("folder")) {
+      // No Root fallback here: a blank folder is a 400, not "Root".
+      toFolder = typeof body.folder === "string" ? body.folder.trim() : null;
+      if (!toFolder || !isValidFolderName(toFolder)) {
+        return res.status(400).json({ detail: "Invalid folder name" });
+      }
+    }
+
+    const valuePresent = has("value");
+    if (
+      valuePresent &&
+      (typeof body.value !== "string" ||
+        Buffer.byteLength(body.value, "utf8") > MAX_VALUE_BYTES)
+    ) {
+      return res.status(400).json({ detail: "Invalid value" });
+    }
+
+    if (!scopeAllowsFolder(req.auth.scope, fromFolder)) {
+      return forbidFolder(res, fromFolder);
+    }
+    if (!scopeAllowsFolder(req.auth.scope, toFolder)) {
+      return forbidFolder(res, toFolder);
+    }
+
+    const notFound = () => {
+      writeAudit(req, {
+        action: "secret_edited",
+        status: "missing",
+        tokenName: req.auth.name,
+        keyName: fromKey,
+      });
+      return res.status(404).json({ detail: "Secret not found" });
+    };
+    const conflict = () =>
+      res.status(409).json({
+        detail: `Secret '${toKey}' already exists in folder '${toFolder}'`,
+      });
+
+    if (!db.getSecret(fromFolder, fromKey)) return notFound();
+
+    const moved = toKey !== fromKey || toFolder !== fromFolder;
+    if (!moved && !valuePresent) {
+      return res.json({ status: "ok", key: toKey, folder: toFolder });
+    }
+    if (moved && db.getSecret(toFolder, toKey)) return conflict();
+
+    const encrypted = valuePresent ? crypto.encryptValue(body.value) : null;
+    // Edit + audit row in ONE transaction: a failed audit insert rolls the edit
+    // back (500, nothing changed) instead of leaving an unaudited rename/move.
+    const editTx = db.db.transaction(() => {
+      if (!db.editSecret(fromFolder, fromKey, toFolder, toKey, encrypted)) {
+        return false;
+      }
+      writeAudit(req, {
+        action: "secret_edited",
+        status: "ok",
+        tokenName: req.auth.name,
+        keyName: toKey,
+        details: `from=${fromFolder}|${fromKey} to=${toFolder}|${toKey} value_changed=${valuePresent}`,
+      });
+      return true;
+    });
+    let updated;
+    try {
+      updated = editTx();
+    } catch (err) {
+      if (
+        err.code === "SQLITE_CONSTRAINT_UNIQUE" ||
+        err.code === "SQLITE_CONSTRAINT"
+      ) {
+        return conflict();
+      }
+      throw err;
+    }
+    if (!updated) return notFound();
+
+    return res.json({ status: "ok", key: toKey, folder: toFolder });
+  });
 
   // DELETE /api/secrets/:folder/:key — write auth, internal
   router.delete(
