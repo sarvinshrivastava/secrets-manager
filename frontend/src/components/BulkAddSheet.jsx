@@ -2,6 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import { MdClose } from "react-icons/md";
 import { parseEnvText } from "../lib/parseEnv.js";
 import { DOT_MASK } from "../lib/format.js";
+import FolderSelect from "./FolderSelect.jsx";
+import { useModalGuard } from "../hooks/useModalGuard.jsx";
+import { isValidFolderName, FOLDER_RULE_HINT } from "../lib/folders.js";
 
 const STATUS_STYLE = {
   add: "border-accent text-accent",
@@ -34,16 +37,16 @@ export default function BulkAddSheet({
       setShowValues(false);
       setOverwrite(new Set());
     }
-  }, [open, defaultFolder]);
+    // Reset only on open so a settings refresh never wipes a pasted file.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
-  useEffect(() => {
-    if (!open) return undefined;
-    function onKey(event) {
-      if (event.key === "Escape") onClose();
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
+  const { requestClose, discardDialog } = useModalGuard({
+    open,
+    dirty: text.trim() !== "",
+    onClose,
+    discardBody: "The pasted text has not been added. Close without adding?",
+  });
 
   // A bulk paste targets ONE folder. Scope the "already exists" set to the
   // selected folder so a key present in another folder is not falsely skipped.
@@ -87,23 +90,35 @@ export default function BulkAddSheet({
 
   if (!open) return null;
 
+  const targetFolder = folder.trim();
+  const folderOk = isValidFolderName(targetFolder);
+
   const tally = rows.reduce((acc, row) => {
     acc[row.status] = (acc[row.status] || 0) + 1;
     return acc;
   }, {});
 
   return (
-    <div className="fixed inset-0 z-40 flex flex-col bg-ink/40">
+    <>
+    <div
+      className="fixed inset-0 z-40 flex flex-col bg-black/40"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="bulk-add-title"
+    >
       <div className="flex min-h-0 flex-1 flex-col bg-surface">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-line px-4 py-3">
-          <h3 className="font-mono text-sm font-semibold text-ink">
+          <h3
+            id="bulk-add-title"
+            className="font-mono text-sm font-semibold text-ink"
+          >
             Paste .env
           </h3>
           <button
             type="button"
-            onClick={onClose}
-            className="text-muted hover:text-ink"
+            onClick={requestClose}
+            className="p-2 text-muted hover:text-ink"
             aria-label="Close"
           >
             <MdClose size={18} />
@@ -111,7 +126,7 @@ export default function BulkAddSheet({
         </div>
 
         {/* Body: paste | ledger */}
-        <div className="grid min-h-0 flex-1 grid-cols-1 md:grid-cols-2">
+        <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-2 md:grid-cols-2 md:grid-rows-1">
           <div className="flex min-h-0 flex-col border-b border-line md:border-b-0 md:border-r">
             <div className="border-b border-line px-4 py-2 font-mono text-xs uppercase tracking-wide text-faint">
               Paste
@@ -123,7 +138,7 @@ export default function BulkAddSheet({
               placeholder={
                 "# paste your .env here\nAPI_KEY=abc123\nDB_URL=postgres://…"
               }
-              className="min-h-0 flex-1 resize-none bg-paper px-4 py-3 font-mono text-sm text-ink outline-none placeholder:text-faint"
+              className="min-h-0 flex-1 resize-none bg-paper px-4 py-3 font-mono text-sm text-ink outline-none placeholder:text-faint focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent"
               spellCheck={false}
             />
           </div>
@@ -212,20 +227,27 @@ export default function BulkAddSheet({
 
         {/* Footer */}
         <div className="flex flex-wrap items-center gap-3 border-t border-line px-4 py-3">
-          <label className="flex items-center gap-2 font-mono text-xs uppercase tracking-wide text-faint">
-            Folder
-            <input
-              list="bulk-folders"
+          <div className="flex items-center gap-2">
+            <label
+              htmlFor="bulk-add-folder"
+              className="font-mono text-xs uppercase tracking-wide text-faint"
+            >
+              Folder
+            </label>
+            <FolderSelect
+              id="bulk-add-folder"
               value={folder}
-              onChange={(event) => setFolder(event.target.value)}
-              className="sm-input w-40 normal-case"
+              onChange={setFolder}
+              folders={folders}
+              dropUp
+              className="w-48 normal-case"
             />
-            <datalist id="bulk-folders">
-              {folders.map((name) => (
-                <option key={name} value={name} />
-              ))}
-            </datalist>
-          </label>
+          </div>
+          {!folderOk && (
+            <span className="font-mono text-xs text-danger">
+              {targetFolder ? FOLDER_RULE_HINT : "Choose a folder"}
+            </span>
+          )}
 
           <label className="flex items-center gap-2 font-mono text-xs text-muted">
             <input
@@ -240,7 +262,7 @@ export default function BulkAddSheet({
             <button
               type="button"
               className="sm-btn"
-              onClick={onClose}
+              onClick={requestClose}
               disabled={busy}
             >
               Cancel
@@ -248,10 +270,10 @@ export default function BulkAddSheet({
             <button
               type="button"
               className="sm-btn-accent"
-              disabled={busy || count === 0}
+              disabled={busy || count === 0 || !folderOk}
               onClick={() =>
                 onCommit({
-                  folder: folder.trim() || defaultFolder,
+                  folder: targetFolder,
                   secrets,
                   overwrite: overwriteKeys,
                 })
@@ -259,11 +281,23 @@ export default function BulkAddSheet({
             >
               {busy
                 ? "Committing…"
-                : `Add ${count} secret${count === 1 ? "" : "s"} → ${folder.trim() || defaultFolder}`}
+                : (
+                    <>
+                      {`Add ${count} secret${count === 1 ? "" : "s"} → `}
+                      <span
+                        className="max-w-[16rem] truncate"
+                        title={targetFolder}
+                      >
+                        {targetFolder}
+                      </span>
+                    </>
+                  )}
             </button>
           </div>
         </div>
       </div>
     </div>
+    {discardDialog}
+    </>
   );
 }

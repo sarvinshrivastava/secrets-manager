@@ -111,7 +111,8 @@ describe("BulkAddSheet folder-scoped exists detection", () => {
     ).toBeInTheDocument();
 
     // Switch the folder selector to A: now K collides and is flagged exists.
-    fireEvent.change(screen.getByDisplayValue("B"), { target: { value: "A" } });
+    fireEvent.click(screen.getByRole("button", { name: "Folder" }));
+    fireEvent.click(screen.getByRole("option", { name: "A" }));
     expect(screen.getByText("exists")).toBeInTheDocument();
     expect(screen.queryByText("add")).toBeNull();
     // The addable count drops to zero (exists is skipped unless overwritten).

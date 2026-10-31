@@ -1,4 +1,7 @@
 import { useEffect, useState } from "react";
+import FolderSelect from "../components/FolderSelect.jsx";
+import { useModalGuard } from "../hooks/useModalGuard.jsx";
+import { useBackdropClose } from "../hooks/useBackdropClose.js";
 import { MdRefresh, MdContentCopy, MdClose } from "react-icons/md";
 import { toast } from "react-hot-toast";
 import {
@@ -72,32 +75,50 @@ function Section({ title, children }) {
 // Full-value reveal modal (shown once after create/rotate — value is never
 // retrievable again).
 function TokenValueModal({ open, label, value, scope, onClose }) {
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (open) setCopied(false);
+  }, [open]);
+  // Back/X/Escape/backdrop prompt until the token was copied; "Done" is an
+  // explicit acknowledgement and closes immediately.
+  const { requestClose, discardDialog } = useModalGuard({
+    open,
+    dirty: !copied,
+    onClose,
+    discardTitle: "Token not copied",
+    discardBody:
+      "This token is shown only once and is not copied yet. Close anyway?",
+    discardLabel: "Close anyway",
+  });
+  const backdrop = useBackdropClose(requestClose);
   if (!open) return null;
   async function copy() {
     try {
       await navigator.clipboard.writeText(value);
+      setCopied(true);
       toast.success("Token copied");
     } catch {
       toast.error("Clipboard unavailable — copy manually");
     }
   }
   return (
+    <>
     <div
-      className="fixed inset-0 z-40 flex items-center justify-center bg-ink/40 px-4"
-      onClick={onClose}
+      className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 px-4"
+      {...backdrop}
       role="presentation"
     >
       <div
-        className="w-full max-w-lg border border-line-strong bg-surface"
-        onClick={(e) => e.stopPropagation()}
+        className="max-h-[calc(100dvh-2rem)] w-full max-w-lg overflow-y-auto border border-line-strong bg-surface"
         role="dialog"
         aria-modal="true"
+        aria-label={label}
       >
         <div className="flex items-center justify-between border-b border-line px-4 py-3">
           <h3 className="font-mono text-sm font-semibold text-ink">{label}</h3>
           <button
-            onClick={onClose}
-            className="text-muted hover:text-ink"
+            onClick={requestClose}
+            className="p-2 text-muted hover:text-ink"
             aria-label="Close"
           >
             <MdClose size={18} />
@@ -128,6 +149,8 @@ function TokenValueModal({ open, label, value, scope, onClose }) {
         </div>
       </div>
     </div>
+    {discardDialog}
+    </>
   );
 }
 
@@ -294,17 +317,14 @@ export default function Settings({
         <p className="mb-2 font-mono text-xs text-muted">
           Preselected when adding secrets. Stored in this browser only.
         </p>
-        <input
-          list="settings-folders"
+        <FolderSelect
           value={defaultFolder}
-          onChange={(event) => onDefaultFolderChange(event.target.value)}
-          className="sm-input max-w-xs"
+          onChange={onDefaultFolderChange}
+          folders={folders}
+          allowNew={false}
+          label="Default folder"
+          className="max-w-xs"
         />
-        <datalist id="settings-folders">
-          {folders.map((name) => (
-            <option key={name} value={name} />
-          ))}
-        </datalist>
       </Section>
 
       {canWrite && (

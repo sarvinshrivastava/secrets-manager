@@ -171,8 +171,8 @@ async function commitBulkTo(user, folder, response) {
   api.bulkCreateSecrets.mockResolvedValue(response);
   await user.click(screen.getByLabelText("Add options"));
   await user.click(await screen.findByText("Paste .env"));
-  const folderInput = await screen.findByDisplayValue("Root");
-  fireEvent.change(folderInput, { target: { value: folder } });
+  await user.click(await screen.findByRole("button", { name: "Folder" }));
+  await user.click(await screen.findByRole("option", { name: folder }));
   const textarea = await screen.findByPlaceholderText(/paste your \.env/i);
   // NEWKEY collides with nothing, so it is addable and the commit is enabled.
   fireEvent.change(textarea, { target: { value: "NEWKEY=1" } });
@@ -215,7 +215,8 @@ describe("App reveal cache eviction on bulk commit", () => {
       invalid: [],
     });
 
-    await user.click(screen.getByLabelText("Mask API_KEY in Staging"));
+    // The overwritten secret's revealed plaintext is dropped immediately.
+    expect(screen.queryByText("old")).toBeNull();
     await revealStagingKey(user);
 
     expect(await screen.findByText("new")).toBeInTheDocument();
@@ -252,7 +253,8 @@ describe("App reveal cache eviction on bulk commit", () => {
       invalid: [],
     });
 
-    await user.click(screen.getByLabelText("Mask API_KEY in Staging"));
+    // The overwritten secret's revealed plaintext is dropped immediately.
+    expect(screen.queryByText("old")).toBeNull();
     await revealStagingKey(user);
 
     expect(await screen.findByText("new")).toBeInTheDocument();

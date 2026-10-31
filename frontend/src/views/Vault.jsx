@@ -16,7 +16,10 @@ export default function Vault({
   folderFilter,
   onFolderFilter,
   onCopy,
+  onEdit,
   onDelete,
+  onAddFolder,
+  evicted, // { n, ids } — bump n to drop revealed plaintext for ids
   loadSecret,
 }) {
   // id -> { value, expiresAt }
@@ -41,6 +44,33 @@ export default function Vault({
     }, 1000);
     return () => clearInterval(timer);
   }, [reveals]);
+
+  // A secret that was edited/overwritten/deleted must not keep showing its old
+  // plaintext, and reveals for ids that no longer exist are dropped.
+  useEffect(() => {
+    if (!evicted || !evicted.ids.length) return;
+    setReveals((current) => {
+      const next = { ...current };
+      let changed = false;
+      evicted.ids.forEach((id) => {
+        if (id in next) {
+          delete next[id];
+          changed = true;
+        }
+      });
+      return changed ? next : current;
+    });
+  }, [evicted]);
+
+  useEffect(() => {
+    setReveals((current) => {
+      const live = new Set(secrets.map((s) => s.id));
+      const kept = Object.entries(current).filter(([id]) => live.has(id));
+      return kept.length === Object.keys(current).length
+        ? current
+        : Object.fromEntries(kept);
+    });
+  }, [secrets]);
 
   // Esc masks all.
   useEffect(() => {
@@ -108,6 +138,7 @@ export default function Vault({
         total={secrets.length}
         active={folderFilter}
         onSelect={onFolderFilter}
+        onAddFolder={role === "write" ? onAddFolder : undefined}
       />
       <VaultTable
         secrets={visible}
@@ -118,6 +149,7 @@ export default function Vault({
         onCopy={onCopy}
         onReveal={handleReveal}
         onMask={handleMask}
+        onEdit={onEdit}
         onDelete={onDelete}
       />
     </div>

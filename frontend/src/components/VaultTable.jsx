@@ -9,6 +9,7 @@ export default function VaultTable({
   onCopy,
   onReveal,
   onMask,
+  onEdit,
   onDelete,
 }) {
   if (secrets.length === 0) {
@@ -27,7 +28,7 @@ export default function VaultTable({
           <col className="w-[132px]" />
           <col />
           <col className="w-[88px]" />
-          <col className="w-[132px]" />
+          <col className="w-[176px]" />
         </colgroup>
         <thead>
           <tr className="border-b border-line-strong bg-paper text-left">
@@ -60,6 +61,7 @@ export default function VaultTable({
               onCopy={onCopy}
               onReveal={onReveal}
               onMask={onMask}
+              onEdit={onEdit}
               onDelete={onDelete}
             />
           ))}

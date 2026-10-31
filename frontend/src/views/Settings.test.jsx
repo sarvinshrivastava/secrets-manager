@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import {
+  render,
+  screen,
+  waitFor,
+  within,
+  act,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 // Mock the API client. createToken is the one under test; listTokens resolves
@@ -213,5 +219,33 @@ describe("Settings create-result modal scope display", () => {
 
     const dialog = await screen.findByRole("dialog");
     expect(dialog).toHaveTextContent("Scope: Root, ServiceA");
+  });
+});
+
+describe("Settings one-time token modal (Back guard)", () => {
+  async function openModal() {
+    const user = userEvent.setup();
+    renderSettings();
+    await settleMount();
+    await user.type(screen.getByPlaceholderText("name e.g. ci-reader"), "ci-reader");
+    await user.click(screen.getByRole("button", { name: "Create token" }));
+    await screen.findByText("Copy this now — it is shown only once.");
+    return user;
+  }
+
+  it("Back before copying asks first; the token is not lost", async () => {
+    await openModal();
+    act(() => {
+      window.dispatchEvent(new PopStateEvent("popstate", { state: null }));
+    });
+    expect(await screen.findByText("Token not copied")).toBeInTheDocument();
+    expect(screen.getByText("sm_secret_value")).toBeInTheDocument();
+  });
+
+  it("Done closes without a prompt", async () => {
+    const user = await openModal();
+    await user.click(screen.getByRole("button", { name: "Done" }));
+    expect(screen.queryByText("Copy this now — it is shown only once.")).toBeNull();
+    expect(screen.queryByText("Token not copied")).toBeNull();
   });
 });

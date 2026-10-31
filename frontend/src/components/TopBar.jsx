@@ -6,11 +6,13 @@ import {
   MdArrowDropDown,
   MdLightMode,
   MdDarkMode,
+  MdBrightnessAuto,
 } from "react-icons/md";
 
 const TABS = [
   { id: "vault", label: "Vault" },
   { id: "audit", label: "Audit" },
+  { id: "analytics", label: "Analytics" },
   { id: "settings", label: "Settings" },
 ];
 
@@ -33,8 +35,9 @@ export default function TopBar({
   searchTerm,
   onSearchChange,
   role,
-  theme,
-  onToggleTheme,
+  themePref, // auto | light | dark
+  resolvedTheme, // light | dark (what is actually applied)
+  onCycleTheme,
   onAddSingle,
   onAddBulk,
   dialogOpen,
@@ -70,6 +73,7 @@ export default function TopBar({
               key={tab.id}
               type="button"
               onClick={() => onViewChange(tab.id)}
+              aria-current={view === tab.id ? "page" : undefined}
               className={`border-b-2 px-2 py-1 font-mono text-sm transition-colors ${
                 view === tab.id
                   ? "border-accent text-ink"
@@ -110,15 +114,19 @@ export default function TopBar({
 
         <button
           type="button"
-          onClick={onToggleTheme}
+          onClick={onCycleTheme}
           className="sm-btn px-2 py-1.5"
-          aria-label="Toggle color theme"
-          title="Toggle theme"
+          aria-label={`Theme: ${themePref}. Click to change`}
+          title={`Theme: ${themePref}${
+            themePref === "auto" ? ` (browser is ${resolvedTheme})` : ""
+          } — click to cycle auto / light / dark`}
         >
-          {theme === "dark" ? (
-            <MdLightMode size={16} />
-          ) : (
+          {themePref === "auto" ? (
+            <MdBrightnessAuto size={16} />
+          ) : themePref === "dark" ? (
             <MdDarkMode size={16} />
+          ) : (
+            <MdLightMode size={16} />
           )}
         </button>
 

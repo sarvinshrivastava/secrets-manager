@@ -7,6 +7,7 @@ import {
   getSecret,
   createSecret,
   bulkCreateSecrets,
+  editSecret,
   deleteSecret,
   setUnauthorizedHandler,
 } from "./api.js";
@@ -14,16 +15,26 @@ import { secretId } from "./lib/format.js";
 import Login from "./views/Login.jsx";
 import Vault from "./views/Vault.jsx";
 import AuditList from "./views/AuditList.jsx";
+import Analytics from "./views/Analytics.jsx";
 import Settings from "./views/Settings.jsx";
 import TopBar from "./components/TopBar.jsx";
 import ConfirmDialog from "./components/ConfirmDialog.jsx";
 import AddSingleDialog from "./components/AddSingleDialog.jsx";
+import EditSecretDialog from "./components/EditSecretDialog.jsx";
+import { useModalGuard } from "./hooks/useModalGuard.jsx";
+import {
+  applyTheme,
+  nextThemePref,
+  readThemePref,
+  resolveTheme,
+  subscribeSystemTheme,
+  writeThemePref,
+} from "./lib/theme.js";
 import BulkAddSheet from "./components/BulkAddSheet.jsx";
 
 const SESSION_TOKEN_KEY = "sm_token_session";
 const PERSIST_TOKEN_KEY = "sm_token_persist";
 const DEFAULT_FOLDER_KEY = "sm_default_folder";
-const THEME_KEY = "sm_theme";
 
 function storeToken(token, remember) {
   if (remember) {
@@ -38,17 +49,6 @@ function storeToken(token, remember) {
 function clearStoredToken() {
   localStorage.removeItem(PERSIST_TOKEN_KEY);
   sessionStorage.removeItem(SESSION_TOKEN_KEY);
-}
-
-function initialTheme() {
-  const stored = localStorage.getItem(THEME_KEY);
-  if (stored === "light" || stored === "dark") return stored;
-  if (typeof window !== "undefined" && window.matchMedia) {
-    return window.matchMedia("(prefers-color-scheme: dark)").matches
-      ? "dark"
-      : "light";
-  }
-  return "light";
 }
 
 export default function App() {
@@ -81,23 +81,37 @@ export default function App() {
   const [busy, setBusy] = useState(false);
 
   const [addSingleOpen, setAddSingleOpen] = useState(false);
+  // Preset for the Add dialog ("+ Folder" opens it with the folder name field).
+  const [addPreset, setAddPreset] = useState({ folder: "", mode: "select" });
+  const [editTarget, setEditTarget] = useState(null); // secret or null
+  // Bump to make Vault drop revealed plaintext for these ids.
+  const [evicted, setEvicted] = useState({ n: 0, ids: [] });
   const [bulkOpen, setBulkOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null); // secret or null
 
-  const [theme, setTheme] = useState(initialTheme);
+  const [themePref, setThemePref] = useState(readThemePref);
+  const [resolvedTheme, setResolvedTheme] = useState(() =>
+    resolveTheme(readThemePref()),
+  );
   const [defaultFolder, setDefaultFolder] = useState(
     () => localStorage.getItem(DEFAULT_FOLDER_KEY) || "Root",
   );
 
   const signedIn = useMemo(() => Boolean(token && role), [token, role]);
 
-  // Apply + persist theme.
+  // Apply + persist the theme preference. In "auto" the browser's colour scheme
+  // is followed live; the listener exists only while the preference is auto.
   useEffect(() => {
-    const root = document.documentElement;
-    if (theme === "dark") root.classList.add("dark");
-    else root.classList.remove("dark");
-    localStorage.setItem(THEME_KEY, theme);
-  }, [theme]);
+    writeThemePref(themePref);
+    const sync = () => {
+      const resolved = resolveTheme(themePref);
+      setResolvedTheme(resolved);
+      applyTheme(resolved);
+    };
+    sync();
+    if (themePref !== "auto") return undefined;
+    return subscribeSystemTheme(sync);
+  }, [themePref]);
 
   useEffect(() => {
     localStorage.setItem(DEFAULT_FOLDER_KEY, defaultFolder);
@@ -115,6 +129,7 @@ export default function App() {
     setView("vault");
     setAddSingleOpen(false);
     setBulkOpen(false);
+    setEditTarget(null);
     setDeleteTarget(null);
   }
 
@@ -157,7 +172,12 @@ export default function App() {
         ? foldersPayload.folders
         : [];
       const used = nextSecrets.map((s) => s.folder);
-      setFolders([...new Set([...serverFolders, ...used])].sort());
+      const nextFolders = [...new Set([...serverFolders, ...used])].sort();
+      setFolders(nextFolders);
+      // The filtered folder can vanish (last secret moved/deleted): fall back.
+      setFolderFilter((current) =>
+        current === "All" || nextFolders.includes(current) ? current : "All",
+      );
     },
     [token],
   );
@@ -266,6 +286,73 @@ export default function App() {
     }
   }
 
+  function evictSecretData(ids) {
+    setSecretCache((current) => {
+      const next = { ...current };
+      ids.forEach((id) => delete next[id]);
+      return next;
+    });
+    setSecretMeta((current) => {
+      const next = { ...current };
+      ids.forEach((id) => delete next[id]);
+      return next;
+    });
+    setEvicted((current) => ({ n: current.n + 1, ids }));
+  }
+
+  function openAdd(preset = { folder: "", mode: "select" }) {
+    setAddPreset(preset);
+    setAddSingleOpen(true);
+  }
+
+  // Fresh read for the edit dialog: never served from secretCache (another
+  // client may have changed it), never written to it (plaintext stays in the
+  // dialog only).
+  const loadFreshValue = useCallback(
+    async (secret) => {
+      const payload = await getSecret(token, secret.folder, secret.key);
+      return payload.value;
+    },
+    [token],
+  );
+
+  // Returns an error message for the dialog to show inline, or null on success.
+  async function handleEditSecret(patch) {
+    const target = editTarget;
+    if (!target) return null;
+    setBusy(true);
+    let result;
+    try {
+      result = await editSecret(token, target.folder, target.key, patch);
+    } catch (error) {
+      setBusy(false);
+      if (error.message === "Unauthorized") return null;
+      // The secret vanished (e.g. a retried edit already applied): resync.
+      if (error.message === "Secret not found") {
+        refreshSecrets(token).catch(() => {});
+      }
+      return error.message;
+    }
+    const newKey = result?.key ?? patch.key ?? target.key;
+    const newFolder = result?.folder ?? patch.folder ?? target.folder;
+    evictSecretData([target.id, secretId(newFolder, newKey)]);
+    setEditTarget(null);
+    toast.success(`Saved ${newKey}`);
+    // The edit is committed; a failed refresh must never read as "Save failed".
+    try {
+      await refreshSecrets(token);
+    } catch (error) {
+      if (error.message !== "Unauthorized") {
+        toast("Saved — couldn't refresh the list, reload to see it", {
+          icon: "!",
+        });
+      }
+    } finally {
+      setBusy(false);
+    }
+    return null;
+  }
+
   async function handleBulkCommit({ folder, secrets: rows, overwrite }) {
     setBusy(true);
     try {
@@ -277,18 +364,7 @@ export default function App() {
       const evictIds = [...(result.updated || []), ...(result.added || [])].map(
         (k) => secretId(folder, k),
       );
-      if (evictIds.length > 0) {
-        setSecretCache((current) => {
-          const next = { ...current };
-          evictIds.forEach((id) => delete next[id]);
-          return next;
-        });
-        setSecretMeta((current) => {
-          const next = { ...current };
-          evictIds.forEach((id) => delete next[id]);
-          return next;
-        });
-      }
+      if (evictIds.length > 0) evictSecretData(evictIds);
 
       await refreshSecrets(token);
       setBulkOpen(false);
@@ -312,16 +388,7 @@ export default function App() {
     setBusy(true);
     try {
       await deleteSecret(token, deleteTarget.folder, deleteTarget.key);
-      setSecretCache((current) => {
-        const next = { ...current };
-        delete next[deleteTarget.id];
-        return next;
-      });
-      setSecretMeta((current) => {
-        const next = { ...current };
-        delete next[deleteTarget.id];
-        return next;
-      });
+      evictSecretData([deleteTarget.id]);
       await refreshSecrets(token);
       setDeleteTarget(null);
       toast.success("Deleted");
@@ -332,6 +399,13 @@ export default function App() {
       setBusy(false);
     }
   }
+
+  // Back closes the delete confirm instead of leaving the site (never dirty).
+  const deleteGuard = useModalGuard({
+    open: Boolean(deleteTarget),
+    onClose: () => setDeleteTarget(null),
+    escape: false, // ConfirmDialog handles its own Escape
+  });
 
   if (!signedIn) {
     return (
@@ -360,11 +434,17 @@ export default function App() {
         searchTerm={searchTerm}
         onSearchChange={setSearchTerm}
         role={role}
-        theme={theme}
-        onToggleTheme={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
-        onAddSingle={() => setAddSingleOpen(true)}
+        themePref={themePref}
+        resolvedTheme={resolvedTheme}
+        onCycleTheme={() => setThemePref((p) => nextThemePref(p))}
+        onAddSingle={() => openAdd()}
         onAddBulk={() => setBulkOpen(true)}
-        dialogOpen={addSingleOpen || bulkOpen || Boolean(deleteTarget)}
+        dialogOpen={
+          addSingleOpen ||
+          bulkOpen ||
+          Boolean(editTarget) ||
+          Boolean(deleteTarget)
+        }
       />
 
       <main className="mx-auto max-w-6xl px-4 py-5">
@@ -379,11 +459,15 @@ export default function App() {
             folderFilter={folderFilter}
             onFolderFilter={setFolderFilter}
             onCopy={handleCopy}
+            onEdit={setEditTarget}
             onDelete={setDeleteTarget}
+            onAddFolder={() => openAdd({ folder: "", mode: "new" })}
+            evicted={evicted}
             loadSecret={loadSecret}
           />
         )}
         {view === "audit" && <AuditList token={token} />}
+        {view === "analytics" && <Analytics token={token} />}
         {view === "settings" && (
           <Settings
             tokenName={tokenName}
@@ -403,9 +487,20 @@ export default function App() {
             open={addSingleOpen}
             folders={folders}
             defaultFolder={defaultFolder}
+            initialFolder={addPreset.folder}
+            initialFolderMode={addPreset.mode}
             busy={busy}
             onSubmit={handleAddSingle}
             onClose={() => setAddSingleOpen(false)}
+          />
+          <EditSecretDialog
+            open={Boolean(editTarget)}
+            secret={editTarget}
+            folders={folders}
+            busy={busy}
+            onLoadValue={loadFreshValue}
+            onSubmit={handleEditSecret}
+            onClose={() => setEditTarget(null)}
           />
           <BulkAddSheet
             open={bulkOpen}
@@ -430,7 +525,7 @@ export default function App() {
         danger
         busy={busy}
         onConfirm={confirmDelete}
-        onClose={() => setDeleteTarget(null)}
+        onClose={deleteGuard.requestClose}
       />
 
       <Toaster
